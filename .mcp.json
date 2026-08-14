@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "soul": {
+      "type": "stdio",
+      "command": "/Users/fritz/.demarkus/bin/demarkus-plugin",
+      "args": [
+        "mcp-serve",
+        "--soul",
+        "soul"
+      ],
+      "env": {}
+    }
+  }
+}
