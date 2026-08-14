@@ -5,9 +5,9 @@ SCRATCH=$(mktemp -d)
 SERVER_PID=""
 ADAPTER_PID=""
 cleanup() {
-  [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
-  [ -n "$ADAPTER_PID" ] && kill "$ADAPTER_PID" 2>/dev/null
-  wait 2>/dev/null
+  [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
+  [ -n "$ADAPTER_PID" ] && kill "$ADAPTER_PID" 2>/dev/null || true
+  wait 2>/dev/null || true
   rm -rf "$SCRATCH"
 }
 trap cleanup EXIT
