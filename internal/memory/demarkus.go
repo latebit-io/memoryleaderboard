@@ -8,9 +8,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/latebit-io/demarkus/client/fetch"
+	"github.com/latebit-io/demarkus/protocol"
 )
+
+// fetchConcurrency bounds the parallel per-hit fetch fan-out in Search.
+const fetchConcurrency = 16
 
 // DemarkusStore stores each Add request as a document under the user's
 // subtree and answers Search via catalog lookup + fetch. Phase 1: naive
@@ -54,8 +59,9 @@ func (s *DemarkusStore) docPath(userID, sessionID, requestID string) string {
 // Add publishes the conversation verbatim. Unconditional publish keeps
 // harness retries of the same request_id idempotent.
 func (s *DemarkusStore) Add(_ context.Context, userID, sessionID, requestID string, msgs []Message) error {
+	title := fmt.Sprintf("Session %s: %s", sessionID, requestID)
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Session %s: %s\n\n", sessionID, requestID)
+	fmt.Fprintf(&b, "# %s\n\n", title)
 	for _, m := range msgs {
 		if m.Timestamp != "" {
 			fmt.Fprintf(&b, "- [%s] **%s**: %s\n", m.Timestamp, m.Role, m.Content)
@@ -64,55 +70,79 @@ func (s *DemarkusStore) Add(_ context.Context, userID, sessionID, requestID stri
 		}
 	}
 	meta := map[string]string{
-		"title":      fmt.Sprintf("Session %s: %s", sessionID, requestID),
+		"title":      title,
 		"tags":       strings.Join(naiveTags(msgs), ","),
 		"importance": "0.5",
 	}
-	res, err := s.client.Publish(s.host, s.docPath(userID, sessionID, requestID), b.String(), s.token, -1, meta)
+	path := s.docPath(userID, sessionID, requestID)
+	res, err := s.client.Publish(s.host, path, b.String(), s.token, -1, meta)
 	if err != nil {
 		return err
 	}
-	if st := res.Response.Status; st != "ok" && st != "created" {
-		return fmt.Errorf("publish %s: status %s", s.docPath(userID, sessionID, requestID), st)
+	if st := res.Response.Status; st != protocol.StatusOK && st != protocol.StatusCreated {
+		return fmt.Errorf("publish %s: status %s", path, st)
 	}
 	return nil
 }
 
 // Search ranks via catalog lookup under the user's prefix, then fetches
 // each hit's body as the evidence content.
-func (s *DemarkusStore) Search(_ context.Context, userID, query string, topK int) ([]Record, error) {
+func (s *DemarkusStore) Search(ctx context.Context, userID, query string, topK int) ([]Record, error) {
 	res, err := s.client.Lookup(s.host, userPrefix(userID)+"/", query, s.token, fetch.LookupOptions{Limit: topK})
 	if err != nil {
 		return nil, err
 	}
 	// A user with no memories yet has no scope; that is an empty result,
 	// not an outage.
-	if st := res.Response.Status; st == "not-found" {
+	if st := res.Response.Status; st == protocol.StatusNotFound {
 		return nil, nil
-	} else if st != "ok" {
+	} else if st != protocol.StatusOK {
 		return nil, fmt.Errorf("lookup %s: status %s", userPrefix(userID), st)
 	}
 	hits := parseLookupTable(res.Response.Body)
+
+	// Fan out fetches: QUIC multiplexes streams on the pooled connection,
+	// and at top_k=100 serial round-trips would dominate search latency.
+	// Index-addressed results preserve the server's rank order.
+	results := make([]*Record, len(hits))
+	errs := make([]error, len(hits))
+	sem := make(chan struct{}, fetchConcurrency)
+	var wg sync.WaitGroup
+	for i, h := range hits {
+		if ctx.Err() != nil {
+			break // caller gone; stop burning streams
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, h lookupHit) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			doc, err := s.client.Fetch(s.host, h.path, s.token)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			if doc.Response.Status != protocol.StatusOK {
+				errs[i] = fmt.Errorf("fetch %s: status %s", h.path, doc.Response.Status)
+				return
+			}
+			results[i] = &Record{
+				ID:        h.path,
+				Content:   doc.Response.Body,
+				Score:     h.importance,
+				CreatedAt: doc.Response.Metadata["modified"],
+			}
+		}(i, h)
+	}
+	wg.Wait()
+
 	records := make([]Record, 0, len(hits))
 	var fetchErr error
-	for _, h := range hits {
-		doc, err := s.client.Fetch(s.host, h.path, s.token)
-		if err != nil {
-			fetchErr = err
-			continue
-		}
-		if doc.Response.Status != "ok" {
-			fetchErr = fmt.Errorf("fetch %s: status %s", h.path, doc.Response.Status)
-			continue
-		}
-		records = append(records, Record{
-			ID:        h.path,
-			Content:   doc.Response.Body,
-			Score:     h.importance,
-			CreatedAt: doc.Response.Metadata["modified"],
-		})
-		if len(records) == topK {
-			break
+	for i, r := range results {
+		if r != nil {
+			records = append(records, *r)
+		} else if errs[i] != nil {
+			fetchErr = errs[i]
 		}
 	}
 	// Partial evidence still scores; fail only when every fetch failed.

@@ -49,22 +49,33 @@ func NewHandler(store memory.Store) *Handler {
 	return &Handler{store: store}
 }
 
-// Routes registers /add and /search plus a health probe.
+// DefaultTopK is the benchmark's formal Search evidence count, used
+// when a request omits top_k.
+const DefaultTopK = 100
+
+// Routes registers /add and /search plus a health probe. An empty apiKey
+// installs no auth middleware; requiring a key (or an explicit open-mode
+// opt-out) is the runtime wiring's decision, not this layer's.
 func Routes(e *echo.Echo, h *Handler, apiKey string) {
-	g := e.Group("", authMiddleware(apiKey))
+	g := e.Group("")
+	if apiKey != "" {
+		g.Use(authMiddleware(apiKey))
+	}
 	g.POST("/add", h.Add)
 	g.POST("/search", h.Search)
 	e.GET("/healthz", func(c *echo.Context) error { return c.NoContent(http.StatusOK) })
 }
 
+// jsonErr is the single error-body shape for all endpoints.
+func jsonErr(c *echo.Context, code int, msg string) error {
+	return c.JSON(code, map[string]string{"error": msg})
+}
+
 // authMiddleware accepts Token/Bearer Authorization or X-Api-Key, per the
-// leaderboard's supported schemes. Empty key disables auth (local dev).
+// leaderboard's supported schemes. It always enforces its key.
 func authMiddleware(apiKey string) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {
-			if apiKey == "" {
-				return next(c)
-			}
 			got := c.Request().Header.Get("X-Api-Key")
 			if got == "" {
 				auth := c.Request().Header.Get("Authorization")
@@ -76,7 +87,7 @@ func authMiddleware(apiKey string) echo.MiddlewareFunc {
 				}
 			}
 			if got != apiKey {
-				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+				return jsonErr(c, http.StatusUnauthorized, "unauthorized")
 			}
 			return next(c)
 		}
@@ -87,14 +98,14 @@ func authMiddleware(apiKey string) echo.MiddlewareFunc {
 func (h *Handler) Add(c *echo.Context) error {
 	var req AddRequest
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return jsonErr(c, http.StatusBadRequest, "invalid json")
 	}
 	if req.UserID == "" || req.RequestID == "" || len(req.Messages) == 0 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "request_id, user_id, messages required"})
+		return jsonErr(c, http.StatusBadRequest, "request_id, user_id, messages required")
 	}
 	if err := h.store.Add(c.Request().Context(), req.UserID, req.SessionID, req.RequestID, req.Messages); err != nil {
 		// 503 is in the harness retry set; surface transient store trouble as retryable.
-		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return jsonErr(c, http.StatusServiceUnavailable, err.Error())
 	}
 	return c.JSON(http.StatusOK, AddResponse{
 		Success:   true,
@@ -108,18 +119,18 @@ func (h *Handler) Add(c *echo.Context) error {
 func (h *Handler) Search(c *echo.Context) error {
 	var req SearchRequest
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return jsonErr(c, http.StatusBadRequest, "invalid json")
 	}
 	if req.UserID == "" || req.Query == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "query, user_id required"})
+		return jsonErr(c, http.StatusBadRequest, "query, user_id required")
 	}
 	topK := req.TopK
 	if topK <= 0 {
-		topK = 100
+		topK = DefaultTopK
 	}
 	records, err := h.store.Search(c.Request().Context(), req.UserID, req.Query, topK)
 	if err != nil {
-		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return jsonErr(c, http.StatusServiceUnavailable, err.Error())
 	}
 	if records == nil {
 		records = []memory.Record{}

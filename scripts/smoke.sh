@@ -1,7 +1,17 @@
 #!/bin/bash
 # End-to-end smoke: ephemeral demarkus-server + adapter, contract assertions.
-set -e
+set -eo pipefail
 SCRATCH=$(mktemp -d)
+SERVER_PID=""
+ADAPTER_PID=""
+cleanup() {
+  [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
+  [ -n "$ADAPTER_PID" ] && kill "$ADAPTER_PID" 2>/dev/null
+  wait 2>/dev/null
+  rm -rf "$SCRATCH"
+}
+trap cleanup EXIT
+
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 
 # Unique ports per run; fail fast instead of touching other processes.
@@ -15,8 +25,10 @@ fi
 
 mkdir -p "$SCRATCH/smoke-root"
 TOKEN=$(~/.demarkus/bin/demarkus-token generate -label smoke -ops read,publish -paths '/**' -tokens "$SCRATCH/tokens.toml" 2>/dev/null | tail -1)
-cleanup() { kill $SERVER_PID $ADAPTER_PID 2>/dev/null; wait 2>/dev/null; rm -rf "$SCRATCH"; }
-trap cleanup EXIT
+if [ -z "$TOKEN" ]; then
+  echo "token generation failed" >&2
+  exit 1
+fi
 
 ~/.demarkus/bin/demarkus-server -root "$SCRATCH/smoke-root" -port $PORT -tokens "$SCRATCH/tokens.toml" >"$SCRATCH/server.log" 2>&1 &
 SERVER_PID=$!
@@ -26,14 +38,22 @@ cd "$REPO" && go build -o "$SCRATCH/adapter" ./cmd/adapter
 ADAPTER_ADDR=$ADDR DEMARKUS_HOST=localhost:$PORT DEMARKUS_INSECURE=1 DEMARKUS_TOKEN="$TOKEN" ADAPTER_API_KEY=smoke-key \
   "$SCRATCH/adapter" >"$SCRATCH/adapter.log" 2>&1 &
 ADAPTER_PID=$!
-for i in $(seq 1 20); do curl -sf http://$ADDR/healthz >/dev/null 2>&1 && break; sleep 0.5; done
+
+CURL="curl -s --connect-timeout 5 --max-time 30"
+up=0
+for i in $(seq 1 20); do $CURL -f http://$ADDR/healthz >/dev/null 2>&1 && up=1 && break; sleep 0.5; done
+if [ "$up" != 1 ]; then
+  echo "adapter never became healthy" >&2
+  tail -5 "$SCRATCH/adapter.log" >&2
+  exit 1
+fi
 
 pass=0; fail=0
 check() { # name, expected-substring, actual
   if [[ "$3" == *"$2"* ]]; then echo "PASS: $1"; pass=$((pass+1)); else echo "FAIL: $1 -> $3"; fail=$((fail+1)); fi
 }
 # curl writes "HTTPSTATUS:<code>" after the body; check both.
-post() { curl -s -w 'HTTPSTATUS:%{http_code}' -X POST "http://$ADDR/$1" -H 'Content-Type: application/json' -H 'X-Api-Key: smoke-key' -d "$2"; }
+post() { $CURL -w 'HTTPSTATUS:%{http_code}' -X POST "http://$ADDR/$1" -H 'Content-Type: application/json' -H 'X-Api-Key: smoke-key' -d "$2"; }
 
 R=$(post add '{
   "request_id": "req-001", "user_id": "user-a", "session_id": "sess-1",
@@ -56,7 +76,7 @@ check "search finds evidence" 'parser' "$R"
 R=$(post search '{"query": "terraform deploy", "user_id": "user-a", "top_k": 5}')
 check "isolation: user-a cannot see user-b" '"data":[]' "$R"
 
-R=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://$ADDR/search -H 'Content-Type: application/json' -d '{"query":"x","user_id":"u"}')
+R=$($CURL -o /dev/null -w '%{http_code}' -X POST http://$ADDR/search -H 'Content-Type: application/json' -d '{"query":"x","user_id":"u"}')
 check "missing auth is 401" '401' "$R"
 
 echo "----"
