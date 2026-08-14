@@ -15,6 +15,7 @@ import (
 	"github.com/labstack/echo/v5"
 
 	"github.com/latebit-io/memoryleaderboard/internal/api"
+	"github.com/latebit-io/memoryleaderboard/internal/llmwiring"
 	"github.com/latebit-io/memoryleaderboard/internal/memory"
 )
 
@@ -39,11 +40,39 @@ func main() {
 	demarkusToken := os.Getenv("DEMARKUS_TOKEN")
 	insecure := os.Getenv("DEMARKUS_INSECURE") == "1"
 
-	store := memory.NewDemarkusStore(demarkusHost, demarkusToken, insecure)
-	defer store.Close()
+	base := memory.NewDemarkusStore(demarkusHost, demarkusToken, insecure)
+	defer base.Close()
+
+	// ADAPTER_NAV selects the search strategy:
+	//   auto (default) agentic search, degrading to catalog lookup
+	//   off            catalog lookup only
+	//   require        agentic search with no silent degradation
+	navMode := env("ADAPTER_NAV", "auto")
+	var store memory.Store = base
+	navEnabled := false
+	if navMode != "off" {
+		provider := llmwiring.Provider(logger)
+		switch {
+		case provider != nil:
+			// Leave headroom under WriteTimeout so a search that exhausts
+			// its budget can still fall back and answer.
+			nav := memory.NewNavStore(base, base, provider, memory.NavOptions{Budget: searchBudget * 3 / 4})
+			navEnabled = true
+			if navMode == "require" {
+				store = nav
+			} else {
+				store = memory.WithFallback(nav, base)
+			}
+		case navMode == "require":
+			logger.Error("ADAPTER_NAV=require but no LLM provider is configured")
+			os.Exit(1)
+		default:
+			logger.Warn("no LLM provider configured; Search runs catalog lookup only")
+		}
+	}
 
 	e := echo.New()
-	api.Routes(e, api.NewHandler(store), apiKey)
+	api.Routes(e, api.NewHandler(store), api.Config{APIKey: apiKey, NavEnabled: navEnabled})
 
 	server := &http.Server{
 		Addr:              addr,

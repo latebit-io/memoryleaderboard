@@ -36,7 +36,7 @@ func (f *fakeStore) Search(_ context.Context, _, _ string, topK int) ([]memory.R
 func newTestServer(t *testing.T, store memory.Store, apiKey string) *httptest.Server {
 	t.Helper()
 	e := echo.New()
-	Routes(e, NewHandler(store), apiKey)
+	Routes(e, NewHandler(store), Config{APIKey: apiKey})
 	srv := httptest.NewServer(e)
 	t.Cleanup(srv.Close)
 	return srv

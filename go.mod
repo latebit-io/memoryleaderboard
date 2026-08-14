@@ -6,6 +6,8 @@ require (
 	github.com/labstack/echo/v5 v5.2.1
 	github.com/latebit-io/demarkus/client v0.24.4
 	github.com/latebit-io/demarkus/protocol v0.11.0
+	github.com/latebit-io/nib/agent v0.2.0
+	github.com/latebit-io/nib/ai v0.2.0
 )
 
 require (

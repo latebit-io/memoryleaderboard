@@ -20,6 +20,7 @@ const fetchConcurrency = 16
 // DemarkusStore stores each Add request as a document under the user's
 // subtree and answers Search via catalog lookup + fetch. Phase 1: naive
 // tagging and lookup-only ranking; the distill/nav agents replace both.
+// It also implements [Navigator] for agentic strategies.
 type DemarkusStore struct {
 	client *fetch.Client
 	host   string
@@ -38,8 +39,55 @@ func NewDemarkusStore(host, token string, insecure bool) *DemarkusStore {
 // Close releases pooled connections.
 func (s *DemarkusStore) Close() { s.client.Close() }
 
-func userPrefix(userID string) string {
+// Scope returns the root path of a user's documents.
+func (s *DemarkusStore) Scope(userID string) string {
 	return "/u/" + sanitize(userID)
+}
+
+// Lookup matches a subject against the catalog under scope. An absent
+// scope (a user with no documents yet) returns an empty table, not an
+// error: it is a normal state, not an outage.
+func (s *DemarkusStore) Lookup(_ context.Context, scope, query string, limit int) (string, error) {
+	res, err := s.client.Lookup(s.host, scope, query, s.token, fetch.LookupOptions{Limit: limit})
+	if err != nil {
+		return "", err
+	}
+	switch res.Response.Status {
+	case protocol.StatusNotFound:
+		return "", nil
+	case protocol.StatusOK:
+		return res.Response.Body, nil
+	default:
+		return "", fmt.Errorf("lookup %s: status %s", scope, res.Response.Status)
+	}
+}
+
+// List returns a directory listing.
+func (s *DemarkusStore) List(_ context.Context, path string) (string, error) {
+	res, err := s.client.List(s.host, path, s.token)
+	if err != nil {
+		return "", err
+	}
+	if res.Response.Status != protocol.StatusOK {
+		return "", fmt.Errorf("list %s: status %s", path, res.Response.Status)
+	}
+	return res.Response.Body, nil
+}
+
+// FetchRecord reads one document as an evidence record.
+func (s *DemarkusStore) FetchRecord(_ context.Context, path string) (Record, error) {
+	res, err := s.client.Fetch(s.host, path, s.token)
+	if err != nil {
+		return Record{}, err
+	}
+	if res.Response.Status != protocol.StatusOK {
+		return Record{}, fmt.Errorf("fetch %s: status %s", path, res.Response.Status)
+	}
+	return Record{
+		ID:        path,
+		Content:   res.Response.Body,
+		CreatedAt: res.Response.Metadata["modified"],
+	}, nil
 }
 
 // Lowercase base32 keeps the encoding injective on case-insensitive
@@ -53,7 +101,7 @@ func sanitize(id string) string {
 }
 
 func (s *DemarkusStore) docPath(userID, sessionID, requestID string) string {
-	return fmt.Sprintf("%s/sessions/%s/%s.md", userPrefix(userID), sanitize(sessionID), sanitize(requestID))
+	return fmt.Sprintf("%s/sessions/%s/%s.md", s.Scope(userID), sanitize(sessionID), sanitize(requestID))
 }
 
 // Add publishes the conversation verbatim. Unconditional publish keeps
@@ -88,23 +136,18 @@ func (s *DemarkusStore) Add(_ context.Context, userID, sessionID, requestID stri
 // Search ranks via catalog lookup under the user's prefix, then fetches
 // each hit's body as the evidence content.
 func (s *DemarkusStore) Search(ctx context.Context, userID, query string, topK int) ([]Record, error) {
-	res, err := s.client.Lookup(s.host, userPrefix(userID)+"/", query, s.token, fetch.LookupOptions{Limit: topK})
+	scope := s.Scope(userID)
+	table, err := s.Lookup(ctx, scope+"/", query, topK)
 	if err != nil {
 		return nil, err
 	}
-	// A user with no memories yet has no scope; that is an empty result,
-	// not an outage.
-	if st := res.Response.Status; st == protocol.StatusNotFound {
-		return nil, nil
-	} else if st != protocol.StatusOK {
-		return nil, fmt.Errorf("lookup %s: status %s", userPrefix(userID), st)
-	}
-	hits := parseLookupTable(res.Response.Body)
+	hits := parseLookupTable(table)
 
 	// Fan out fetches: QUIC multiplexes streams on the pooled connection,
 	// and at top_k=100 serial round-trips would dominate search latency.
 	// Index-addressed results preserve the server's rank order.
-	results := make([]*Record, len(hits))
+	records := make([]Record, len(hits))
+	found := make([]bool, len(hits))
 	errs := make([]error, len(hits))
 	sem := make(chan struct{}, fetchConcurrency)
 	var wg sync.WaitGroup
@@ -117,39 +160,31 @@ func (s *DemarkusStore) Search(ctx context.Context, userID, query string, topK i
 		go func(i int, h lookupHit) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			doc, err := s.client.Fetch(s.host, h.path, s.token)
+			rec, err := s.FetchRecord(ctx, h.path)
 			if err != nil {
 				errs[i] = err
 				return
 			}
-			if doc.Response.Status != protocol.StatusOK {
-				errs[i] = fmt.Errorf("fetch %s: status %s", h.path, doc.Response.Status)
-				return
-			}
-			results[i] = &Record{
-				ID:        h.path,
-				Content:   doc.Response.Body,
-				Score:     h.importance,
-				CreatedAt: doc.Response.Metadata["modified"],
-			}
+			rec.Score = h.importance
+			records[i], found[i] = rec, true
 		}(i, h)
 	}
 	wg.Wait()
 
-	records := make([]Record, 0, len(hits))
+	out := records[:0]
 	var fetchErr error
-	for i, r := range results {
-		if r != nil {
-			records = append(records, *r)
+	for i := range records {
+		if found[i] {
+			out = append(out, records[i])
 		} else if errs[i] != nil {
 			fetchErr = errs[i]
 		}
 	}
 	// Partial evidence still scores; fail only when every fetch failed.
-	if len(records) == 0 && fetchErr != nil {
+	if len(out) == 0 && fetchErr != nil {
 		return nil, fetchErr
 	}
-	return records, nil
+	return out, nil
 }
 
 type lookupHit struct {
@@ -161,7 +196,7 @@ type lookupHit struct {
 // table a LOOKUP returns, preserving server rank order.
 func parseLookupTable(body string) []lookupHit {
 	var hits []lookupHit
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "| /") {
 			continue
@@ -177,15 +212,23 @@ func parseLookupTable(body string) []lookupHit {
 	return hits
 }
 
+// stopWords covers both length classes the tokenizer admits: dropping the
+// two-letter function words matters as much as the longer ones now that
+// two-character tokens are tagged.
 var stopWords = map[string]bool{
 	"the": true, "and": true, "for": true, "that": true, "this": true,
 	"with": true, "you": true, "your": true, "have": true, "from": true,
 	"was": true, "were": true, "are": true, "not": true, "but": true,
 	"what": true, "when": true, "where": true, "how": true, "why": true,
 	"can": true, "could": true, "would": true, "should": true, "about": true,
+	"is": true, "it": true, "of": true, "to": true, "in": true, "on": true,
+	"we": true, "my": true, "by": true, "so": true, "as": true, "at": true,
+	"an": true, "be": true, "do": true, "if": true, "or": true, "us": true,
 }
 
-var wordRe = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9_-]{2,}`)
+// Two-character minimum: acronyms (CI, DB, ML) carry as much retrieval
+// signal as long words and are what a query most often names.
+var wordRe = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9_-]+`)
 
 // naiveTags picks the most frequent non-stopword terms so lookup has
 // something to match. Placeholder for the Add-time distillation cascade.
