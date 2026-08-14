@@ -121,6 +121,9 @@ func TestSearchEmptyIsArrayNotNull(t *testing.T) {
 	srv := newTestServer(t, &fakeStore{}, "")
 	resp := post(t, srv.URL+"/search", `{"query": "q", "user_id": "u1"}`, nil)
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
 	var raw map[string]json.RawMessage
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		t.Fatal(err)

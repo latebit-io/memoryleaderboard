@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"encoding/base32"
 	"fmt"
 	"regexp"
 	"sort"
@@ -36,13 +37,14 @@ func userPrefix(userID string) string {
 	return "/u/" + sanitize(userID)
 }
 
-var unsafePath = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
+// Lowercase base32 keeps the encoding injective on case-insensitive
+// filesystems (macOS default); base64url would collide on letter case.
+var pathEncoding = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(base32.NoPadding)
 
-// sanitize keeps ids path-safe; user_id is the isolation boundary so it
-// must never traverse outside its prefix.
+// sanitize maps ids to path segments injectively; user_id is the
+// isolation boundary, so distinct ids must never share a subtree.
 func sanitize(id string) string {
-	id = strings.ReplaceAll(id, "..", "_")
-	return unsafePath.ReplaceAllString(id, "_")
+	return pathEncoding.EncodeToString([]byte(id))
 }
 
 func (s *DemarkusStore) docPath(userID, sessionID, requestID string) string {
@@ -83,11 +85,24 @@ func (s *DemarkusStore) Search(_ context.Context, userID, query string, topK int
 	if err != nil {
 		return nil, err
 	}
+	// A user with no memories yet has no scope; that is an empty result,
+	// not an outage.
+	if st := res.Response.Status; st == "not-found" {
+		return nil, nil
+	} else if st != "ok" {
+		return nil, fmt.Errorf("lookup %s: status %s", userPrefix(userID), st)
+	}
 	hits := parseLookupTable(res.Response.Body)
 	records := make([]Record, 0, len(hits))
+	var fetchErr error
 	for _, h := range hits {
 		doc, err := s.client.Fetch(s.host, h.path, s.token)
-		if err != nil || doc.Response.Status != "ok" {
+		if err != nil {
+			fetchErr = err
+			continue
+		}
+		if doc.Response.Status != "ok" {
+			fetchErr = fmt.Errorf("fetch %s: status %s", h.path, doc.Response.Status)
 			continue
 		}
 		records = append(records, Record{
@@ -99,6 +114,10 @@ func (s *DemarkusStore) Search(_ context.Context, userID, query string, topK int
 		if len(records) == topK {
 			break
 		}
+	}
+	// Partial evidence still scores; fail only when every fetch failed.
+	if len(records) == 0 && fetchErr != nil {
+		return nil, fetchErr
 	}
 	return records, nil
 }

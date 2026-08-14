@@ -30,9 +30,13 @@ func main() {
 
 	addr := env("ADAPTER_ADDR", ":8080")
 	apiKey := os.Getenv("ADAPTER_API_KEY")
+	if apiKey == "" && os.Getenv("ADAPTER_ALLOW_UNAUTHENTICATED") != "1" {
+		logger.Error("ADAPTER_API_KEY is required; set ADAPTER_ALLOW_UNAUTHENTICATED=1 to run open (dev only)")
+		os.Exit(1)
+	}
 	demarkusHost := env("DEMARKUS_HOST", "localhost:6309")
 	demarkusToken := os.Getenv("DEMARKUS_TOKEN")
-	insecure := env("DEMARKUS_INSECURE", "1") == "1"
+	insecure := os.Getenv("DEMARKUS_INSECURE") == "1"
 
 	store := memory.NewDemarkusStore(demarkusHost, demarkusToken, insecure)
 	defer store.Close()
@@ -40,7 +44,15 @@ func main() {
 	e := echo.New()
 	api.Routes(e, api.NewHandler(store), apiKey)
 
-	server := &http.Server{Addr: addr, Handler: e, ReadHeaderTimeout: 10 * time.Second}
+	// WriteTimeout must cover a full agentic Search, which costs seconds.
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           e,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
