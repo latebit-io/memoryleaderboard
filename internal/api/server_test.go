@@ -36,7 +36,7 @@ func (f *fakeStore) Search(_ context.Context, _, _ string, topK int) ([]memory.R
 func newTestServer(t *testing.T, store memory.Store, apiKey string) *httptest.Server {
 	t.Helper()
 	e := echo.New()
-	Routes(e, NewHandler(store), apiKey)
+	Routes(e, NewHandler(store), Config{APIKey: apiKey})
 	srv := httptest.NewServer(e)
 	t.Cleanup(srv.Close)
 	return srv
@@ -69,7 +69,7 @@ func TestAddEchoesIDs(t *testing.T) {
 		"session_id": "s1",
 		"messages": [{"role": "user", "content": "remember the build uses make"}]
 	}`, nil)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -89,7 +89,7 @@ func TestAddEchoesIDs(t *testing.T) {
 func TestAddValidates(t *testing.T) {
 	srv := newTestServer(t, &fakeStore{}, "")
 	resp := post(t, srv.URL+"/add", `{"request_id": "r1"}`, nil)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
@@ -103,7 +103,7 @@ func TestSearchOrderedData(t *testing.T) {
 	srv := newTestServer(t, store, "")
 
 	resp := post(t, srv.URL+"/search", `{"query": "build", "user_id": "u1", "top_k": 1}`, nil)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -120,7 +120,7 @@ func TestSearchOrderedData(t *testing.T) {
 func TestSearchEmptyIsArrayNotNull(t *testing.T) {
 	srv := newTestServer(t, &fakeStore{}, "")
 	resp := post(t, srv.URL+"/search", `{"query": "q", "user_id": "u1"}`, nil)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
@@ -143,14 +143,14 @@ func TestAuthSchemes(t *testing.T) {
 		"apikey": {"X-Api-Key": "sekrit"},
 	} {
 		resp := post(t, srv.URL+"/search", body, headers)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("%s: status = %d, want 200", name, resp.StatusCode)
 		}
 	}
 
 	resp := post(t, srv.URL+"/search", body, map[string]string{"X-Api-Key": "wrong"})
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("wrong key: status = %d, want 401", resp.StatusCode)
 	}

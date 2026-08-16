@@ -53,17 +53,29 @@ func NewHandler(store memory.Store) *Handler {
 // when a request omits top_k.
 const DefaultTopK = 100
 
-// Routes registers /add and /search plus a health probe. An empty apiKey
-// installs no auth middleware; requiring a key (or an explicit open-mode
-// opt-out) is the runtime wiring's decision, not this layer's.
-func Routes(e *echo.Echo, h *Handler, apiKey string) {
+// Config carries the runtime's decisions to the HTTP layer.
+type Config struct {
+	// APIKey enforces auth on /add and /search. Empty installs no auth
+	// middleware; requiring a key (or an explicit open-mode opt-out) is
+	// the runtime wiring's decision, not this layer's.
+	APIKey string
+	// NavEnabled reports whether agentic search is active, surfaced on
+	// /healthz so operators and tests can see the mode without reading
+	// logs.
+	NavEnabled bool
+}
+
+// Routes registers /add and /search plus a health probe.
+func Routes(e *echo.Echo, h *Handler, cfg Config) {
 	g := e.Group("")
-	if apiKey != "" {
-		g.Use(authMiddleware(apiKey))
+	if cfg.APIKey != "" {
+		g.Use(authMiddleware(cfg.APIKey))
 	}
 	g.POST("/add", h.Add)
 	g.POST("/search", h.Search)
-	e.GET("/healthz", func(c *echo.Context) error { return c.NoContent(http.StatusOK) })
+	e.GET("/healthz", func(c *echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{"status": "ok", "nav": cfg.NavEnabled})
+	})
 }
 
 // jsonErr is the single error-body shape for all endpoints.
