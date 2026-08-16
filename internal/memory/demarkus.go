@@ -23,6 +23,7 @@ const fetchConcurrency = 16
 // It also implements [Navigator] for agentic strategies.
 type DemarkusStore struct {
 	client *fetch.Client
+	reader *markReadClient
 	host   string
 	token  string
 }
@@ -31,13 +32,17 @@ type DemarkusStore struct {
 func NewDemarkusStore(host, token string, insecure bool) *DemarkusStore {
 	return &DemarkusStore{
 		client: fetch.NewClient(fetch.Options{Insecure: insecure}),
+		reader: newMarkReadClient(insecure),
 		host:   host,
 		token:  token,
 	}
 }
 
 // Close releases pooled connections.
-func (s *DemarkusStore) Close() { s.client.Close() }
+func (s *DemarkusStore) Close() {
+	s.client.Close()
+	s.reader.Close()
+}
 
 // Scope returns the root path of a user's documents.
 func (s *DemarkusStore) Scope(userID string) string {
@@ -47,47 +52,62 @@ func (s *DemarkusStore) Scope(userID string) string {
 // Lookup matches a subject against the catalog under scope. An absent
 // scope (a user with no documents yet) returns an empty table, not an
 // error: it is a normal state, not an outage.
-func (s *DemarkusStore) Lookup(_ context.Context, scope, query string, limit int) (string, error) {
-	res, err := s.client.Lookup(s.host, scope, query, s.token, fetch.LookupOptions{Limit: limit})
+func (s *DemarkusStore) Lookup(ctx context.Context, scope, query string, limit int) (string, error) {
+	meta := map[string]string{"query": query}
+	if limit > 0 {
+		meta["limit"] = strconv.Itoa(limit)
+	}
+	if s.token != "" {
+		meta["auth"] = s.token
+	}
+	res, err := s.reader.Request(ctx, s.host, protocol.Request{Verb: protocol.VerbLookup, Path: scope, Metadata: meta})
 	if err != nil {
 		return "", err
 	}
-	switch res.Response.Status {
+	switch res.Status {
 	case protocol.StatusNotFound:
 		return "", nil
 	case protocol.StatusOK:
-		return res.Response.Body, nil
+		return res.Body, nil
 	default:
-		return "", fmt.Errorf("lookup %s: status %s", scope, res.Response.Status)
+		return "", fmt.Errorf("lookup %s: status %s", scope, res.Status)
 	}
 }
 
 // List returns a directory listing.
-func (s *DemarkusStore) List(_ context.Context, path string) (string, error) {
-	res, err := s.client.List(s.host, path, s.token)
+func (s *DemarkusStore) List(ctx context.Context, path string) (string, error) {
+	res, err := s.reader.Request(ctx, s.host, s.readRequest(protocol.VerbList, path))
 	if err != nil {
 		return "", err
 	}
-	if res.Response.Status != protocol.StatusOK {
-		return "", fmt.Errorf("list %s: status %s", path, res.Response.Status)
+	if res.Status != protocol.StatusOK {
+		return "", fmt.Errorf("list %s: status %s", path, res.Status)
 	}
-	return res.Response.Body, nil
+	return res.Body, nil
 }
 
 // FetchRecord reads one document as an evidence record.
-func (s *DemarkusStore) FetchRecord(_ context.Context, path string) (Record, error) {
-	res, err := s.client.Fetch(s.host, path, s.token)
+func (s *DemarkusStore) FetchRecord(ctx context.Context, path string) (Record, error) {
+	res, err := s.reader.Request(ctx, s.host, s.readRequest(protocol.VerbFetch, path))
 	if err != nil {
 		return Record{}, err
 	}
-	if res.Response.Status != protocol.StatusOK {
-		return Record{}, fmt.Errorf("fetch %s: status %s", path, res.Response.Status)
+	if res.Status != protocol.StatusOK {
+		return Record{}, fmt.Errorf("fetch %s: status %s", path, res.Status)
 	}
 	return Record{
 		ID:        path,
-		Content:   res.Response.Body,
-		CreatedAt: res.Response.Metadata["modified"],
+		Content:   res.Body,
+		CreatedAt: res.Metadata["modified"],
 	}, nil
+}
+
+func (s *DemarkusStore) readRequest(verb, path string) protocol.Request {
+	meta := make(map[string]string)
+	if s.token != "" {
+		meta["auth"] = s.token
+	}
+	return protocol.Request{Verb: verb, Path: path, Metadata: meta}
 }
 
 // Lowercase base32 keeps the encoding injective on case-insensitive
@@ -171,6 +191,7 @@ func (s *DemarkusStore) Search(ctx context.Context, userID, query string, topK i
 	}
 	wg.Wait()
 
+	// Compact in place; writes never run ahead of the read index.
 	out := records[:0]
 	var fetchErr error
 	for i := range records {

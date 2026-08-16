@@ -29,7 +29,8 @@ func (f *FallbackStore) Search(ctx context.Context, userID, query string, topK i
 		return records, nil
 	}
 	if err != nil {
-		slog.Warn("primary search fell back", "err", err)
+		// Backend errors can contain the user's scoped document path.
+		slog.WarnContext(ctx, "primary search fell back")
 	}
 	return f.secondary.Search(ctx, userID, query, topK)
 }

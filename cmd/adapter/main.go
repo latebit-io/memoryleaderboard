@@ -48,6 +48,12 @@ func main() {
 	//   off            catalog lookup only
 	//   require        agentic search with no silent degradation
 	navMode := env("ADAPTER_NAV", "auto")
+	switch navMode {
+	case "auto", "off", "require":
+	default:
+		logger.Error("invalid ADAPTER_NAV value", "value", navMode)
+		os.Exit(1)
+	}
 	var store memory.Store = base
 	navEnabled := false
 	if navMode != "off" {

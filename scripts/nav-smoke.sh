@@ -8,7 +8,13 @@ source "$(dirname "$0")/lib/harness.sh"
 # surfaces as a failed assertion rather than a passing lookup result.
 export ADAPTER_NAV=require
 # An agentic search costs seconds; allow a full nav budget per request.
-harness_start nav k 180
+if ! harness_start nav k 180; then
+  if grep -q 'ADAPTER_NAV=require but no LLM provider is configured' "$ADAPTER_LOG"; then
+    echo "SKIP: no LLM provider configured; agentic search cannot run"
+    exit 0
+  fi
+  exit 1
+fi
 
 if ! $CURL "http://$ADDR/healthz" | grep -q '"nav":true'; then
   echo "SKIP: no LLM provider configured; agentic search cannot run"

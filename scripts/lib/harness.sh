@@ -58,7 +58,7 @@ harness_start() {
   if [ "$up" != 1 ]; then
     echo "adapter never became healthy" >&2
     tail -5 "$ADAPTER_LOG" >&2
-    exit 1
+    return 1
   fi
 }
 

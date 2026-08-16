@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/latebit-io/nib/ai/llm"
 )
@@ -13,11 +14,15 @@ import (
 // scriptedProvider replays a fixed sequence of tool-call turns, then a
 // plain text turn, so the nav loop runs without an LLM.
 type scriptedProvider struct {
-	turns [][]llm.ToolCall
-	turn  int
+	turns     [][]llm.ToolCall
+	turn      int
+	failAfter int
 }
 
 func (p *scriptedProvider) Stream(_ context.Context, _ []llm.Message, _ []llm.ToolDef) (<-chan llm.StreamEvent, error) {
+	if p.failAfter > 0 && p.turn >= p.failAfter {
+		return nil, fmt.Errorf("scripted provider failure")
+	}
 	ch := make(chan llm.StreamEvent, 1)
 	if p.turn < len(p.turns) {
 		ch <- llm.StreamEvent{Done: true, ToolCalls: p.turns[p.turn]}
@@ -36,13 +41,15 @@ func call(id, name string, args any) llm.ToolCall {
 
 // fakeNav is an in-memory Navigator: path -> body.
 type fakeNav struct {
-	docs    map[string]string
-	fetches int
+	docs        map[string]string
+	fetches     int
+	lookupLimit int
 }
 
 func (f *fakeNav) Scope(userID string) string { return "/u/" + userID }
 
-func (f *fakeNav) Lookup(_ context.Context, scope, query string, _ int) (string, error) {
+func (f *fakeNav) Lookup(_ context.Context, scope, query string, limit int) (string, error) {
+	f.lookupLimit = limit
 	var b strings.Builder
 	b.WriteString("| Path | Importance |\n")
 	for path, body := range f.docs {
@@ -136,6 +143,23 @@ func TestSearchFallsBackToFetchOrderWithoutSubmit(t *testing.T) {
 	}
 }
 
+func TestSearchReturnsFetchedEvidenceAfterProviderFailure(t *testing.T) {
+	nav := &fakeNav{docs: map[string]string{"/u/u1/a.md": "alpha"}}
+	provider := &scriptedProvider{
+		turns:     [][]llm.ToolCall{{call("1", "memory_fetch", map[string]any{"path": "/u/u1/a.md"})}},
+		failAfter: 1,
+	}
+	store := NewNavStore(errStore{}, nav, provider, NavOptions{})
+
+	records, err := store.Search(context.Background(), "u1", "alpha", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].ID != "/u/u1/a.md" {
+		t.Fatalf("records = %+v, want fetched evidence", records)
+	}
+}
+
 func TestSearchErrorsWhenNothingRead(t *testing.T) {
 	store, _ := newFakeNavStore(t, map[string]string{"/u/u1/a.md": "alpha"}, nil)
 	if _, err := store.Search(context.Background(), "u1", "alpha", 10); err == nil {
@@ -158,6 +182,38 @@ func TestSearchTopKTruncates(t *testing.T) {
 	}
 	if len(records) != 2 {
 		t.Fatalf("len(records) = %d, want 2", len(records))
+	}
+}
+
+func TestEvidenceRejectsNonPositiveTopK(t *testing.T) {
+	rec := Record{ID: "/u/u1/a.md"}
+	for name, run := range map[string]*navRun{
+		"fetch order":     {fetched: []Record{rec}},
+		"submitted order": {fetched: []Record{rec}, ranked: []string{rec.ID}},
+	} {
+		for _, topK := range []int{0, -1} {
+			if got := run.evidence(topK); len(got) != 0 {
+				t.Errorf("%s evidence(%d) = %+v, want none", name, topK, got)
+			}
+		}
+	}
+}
+
+func TestNavOptionsDefaultNonPositiveValues(t *testing.T) {
+	opts := (NavOptions{Budget: -1, MaxTurns: -1, SnippetBytes: -1}).withDefaults()
+	if opts.Budget <= 0 || opts.MaxTurns <= 0 || opts.SnippetBytes <= 0 {
+		t.Fatalf("defaults left non-positive values: %+v", opts)
+	}
+}
+
+func TestLookupClampsModelLimit(t *testing.T) {
+	nav := &fakeNav{docs: map[string]string{}}
+	run := &navRun{nav: nav, scope: "/u/u1"}
+	if _, err := run.lookup(context.Background(), map[string]any{"query": "alpha", "limit": float64(1000)}); err != nil {
+		t.Fatal(err)
+	}
+	if nav.lookupLimit != maxLookupLimit {
+		t.Errorf("lookup limit = %d, want %d", nav.lookupLimit, maxLookupLimit)
 	}
 }
 
@@ -225,16 +281,13 @@ func TestFetchShowsSnippetButKeepsFullBody(t *testing.T) {
 func TestSnippetCutsOnRuneBoundary(t *testing.T) {
 	// Every rune is 3 bytes, so a 10-byte limit lands mid-rune.
 	out := snippet(strings.Repeat("日", 10), 10)
-	if !utf8ValidString(out) {
+	if !utf8.ValidString(out) {
 		t.Fatalf("snippet produced invalid UTF-8: %q", out)
 	}
-}
-
-func utf8ValidString(s string) bool {
-	for _, r := range s {
-		if r == '�' {
-			return false
-		}
+	if !strings.HasSuffix(out, "\n[truncated]") {
+		t.Fatalf("snippet = %q, want truncation marker", out)
 	}
-	return true
+	if got := strings.TrimSuffix(out, "\n[truncated]"); got != strings.Repeat("日", 3) {
+		t.Errorf("kept %q, want three whole runes", got)
+	}
 }

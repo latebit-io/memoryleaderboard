@@ -46,7 +46,7 @@ func wireOAuth(resolved *llmconfig.Resolved, logger *slog.Logger) {
 	}
 	store, err := oauth.NewStore(path)
 	if err != nil {
-		logger.Debug("oauth store unreadable", "err", err)
+		logger.Warn("oauth store unreadable", "err", err)
 		return
 	}
 	llmconfig.WireOAuth(resolved, store)
@@ -60,7 +60,7 @@ func wireStoredKey(resolved *llmconfig.Resolved, logger *slog.Logger) {
 	}
 	keyStore, err := oauth.NewKeyStore(path)
 	if err != nil {
-		logger.Debug("key store unreadable", "err", err)
+		logger.Warn("key store unreadable", "err", err)
 		return
 	}
 	llmconfig.WireStoredKey(resolved, keyStore)

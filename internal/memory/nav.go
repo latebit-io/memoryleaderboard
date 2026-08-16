@@ -52,13 +52,13 @@ func (o NavOptions) withDefaults() NavOptions {
 	if o.SystemPrompt == "" {
 		o.SystemPrompt = DefaultNavPrompt
 	}
-	if o.Budget == 0 {
+	if o.Budget <= 0 {
 		o.Budget = 90 * time.Second
 	}
-	if o.MaxTurns == 0 {
+	if o.MaxTurns <= 0 {
 		o.MaxTurns = 16
 	}
-	if o.SnippetBytes == 0 {
+	if o.SnippetBytes <= 0 {
 		o.SnippetBytes = 2048
 	}
 	return o
@@ -129,12 +129,12 @@ func (n *NavStore) Search(ctx context.Context, userID, query string, topK int) (
 	}
 	close(events)
 	<-drained
-	if err != nil {
-		return nil, err
-	}
 
 	records := run.evidence(topK)
 	if len(records) == 0 {
+		if err != nil {
+			return nil, err
+		}
 		return nil, errors.Join(errNoEvidence, ctx.Err())
 	}
 	return records, nil
@@ -170,9 +170,9 @@ func (r *navRun) scoped(p string) (string, error) {
 	return p, nil
 }
 
-func (r *navRun) record(path string) (Record, bool) {
+func (r *navRun) record(docPath string) (Record, bool) {
 	for _, rec := range r.fetched {
-		if rec.ID == path {
+		if rec.ID == docPath {
 			return rec, true
 		}
 	}
@@ -182,6 +182,9 @@ func (r *navRun) record(path string) (Record, bool) {
 // evidence assembles the ranked result: submitted order when the agent
 // submitted, fetch order otherwise.
 func (r *navRun) evidence(topK int) []Record {
+	if topK <= 0 {
+		return nil
+	}
 	if len(r.ranked) == 0 {
 		out := r.fetched
 		if len(out) > topK {
@@ -213,6 +216,9 @@ func withRankScores(recs []Record) []Record {
 }
 
 const submitToolName = "submit_evidence"
+
+// maxLookupLimit bounds model-controlled transcript growth.
+const maxLookupLimit = 50
 
 // Tool definitions are constant; only the bound run varies per search.
 var navToolDefs = []llm.ToolDef{
@@ -247,12 +253,19 @@ func toolDef(name, description string, params map[string]llm.FunctionParam, requ
 }
 
 func (r *navRun) tools() []agent.Tool {
-	runners := []func(context.Context, map[string]any) (string, error){
-		r.lookup, r.list, r.fetch, r.submit,
+	runners := map[string]func(context.Context, map[string]any) (string, error){
+		"memory_lookup": r.lookup,
+		"memory_list":   r.list,
+		"memory_fetch":  r.fetch,
+		submitToolName:  r.submit,
 	}
-	tools := make([]agent.Tool, len(navToolDefs))
-	for i, def := range navToolDefs {
-		tools[i] = &navTool{def: def, run: runners[i]}
+	tools := make([]agent.Tool, 0, len(navToolDefs))
+	for _, def := range navToolDefs {
+		run, ok := runners[def.Function.Name]
+		if !ok {
+			panic("nav tool without a runner: " + def.Function.Name)
+		}
+		tools = append(tools, &navTool{def: def, run: run})
 	}
 	return tools
 }
@@ -266,6 +279,7 @@ func (r *navRun) lookup(ctx context.Context, args map[string]any) (string, error
 	if l, ok := args["limit"].(float64); ok && l > 0 {
 		limit = int(l)
 	}
+	limit = min(limit, maxLookupLimit)
 	table, err := r.nav.Lookup(ctx, r.scope+"/", query, limit)
 	if err != nil {
 		return "", err
@@ -278,28 +292,28 @@ func (r *navRun) lookup(ctx context.Context, args map[string]any) (string, error
 
 func (r *navRun) list(ctx context.Context, args map[string]any) (string, error) {
 	p, _ := args["path"].(string)
-	path, err := r.scoped(p)
+	docPath, err := r.scoped(p)
 	if err != nil {
 		return "", err
 	}
-	if !strings.HasSuffix(path, "/") {
-		path += "/"
+	if !strings.HasSuffix(docPath, "/") {
+		docPath += "/"
 	}
-	return r.nav.List(ctx, path)
+	return r.nav.List(ctx, docPath)
 }
 
 // fetch reads a document, keeps the full body for the caller, and shows
 // the agent only its opening.
 func (r *navRun) fetch(ctx context.Context, args map[string]any) (string, error) {
 	p, _ := args["path"].(string)
-	path, err := r.scoped(p)
+	docPath, err := r.scoped(p)
 	if err != nil {
 		return "", err
 	}
-	if rec, ok := r.record(path); ok {
+	if rec, ok := r.record(docPath); ok {
 		return snippet(rec.Content, r.snippet), nil
 	}
-	rec, err := r.nav.FetchRecord(ctx, path)
+	rec, err := r.nav.FetchRecord(ctx, docPath)
 	if err != nil {
 		return "", err
 	}
@@ -319,12 +333,12 @@ func (r *navRun) submit(_ context.Context, args map[string]any) (string, error) 
 		if !ok {
 			continue
 		}
-		path, err := r.scoped(s)
-		if err != nil || seen[path] {
+		docPath, err := r.scoped(s)
+		if err != nil || seen[docPath] {
 			continue
 		}
-		seen[path] = true
-		r.ranked = append(r.ranked, path)
+		seen[docPath] = true
+		r.ranked = append(r.ranked, docPath)
 	}
 	return fmt.Sprintf("recorded %d evidence documents; you are done", len(r.ranked)), nil
 }
