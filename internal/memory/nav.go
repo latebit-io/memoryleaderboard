@@ -299,7 +299,11 @@ func (r *navRun) list(ctx context.Context, args map[string]any) (string, error) 
 	if !strings.HasSuffix(docPath, "/") {
 		docPath += "/"
 	}
-	return r.nav.List(ctx, docPath)
+	listing, err := r.nav.List(ctx, docPath)
+	if err != nil {
+		return "", err
+	}
+	return snippet(listing, min(r.snippet, maxListBytes)), nil
 }
 
 // fetch reads a document, keeps the full body for the caller, and shows

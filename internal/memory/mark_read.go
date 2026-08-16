@@ -1,13 +1,15 @@
 package memory
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
-	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/latebit-io/demarkus/protocol"
@@ -18,6 +20,7 @@ const (
 	markRequestTimeout = 10 * time.Second
 	markMaxAttempts    = 5
 	markRetryDelay     = 100 * time.Millisecond
+	maxListBytes       = 8 * 1024
 )
 
 // markReadClient supplies context-aware reads until the shared client exposes
@@ -51,39 +54,42 @@ func (c *markReadClient) Close() {
 }
 
 func (c *markReadClient) Request(ctx context.Context, host string, req protocol.Request) (protocol.Response, error) {
-	var lastErr error
-	for attempt := range markMaxAttempts {
+	return retryMarkRead(ctx, func(attemptCtx context.Context) (protocol.Response, error) {
+		conn, err := c.getConn(attemptCtx, host)
+		if err != nil {
+			return protocol.Response{}, err
+		}
+		response, err := requestOnConn(attemptCtx, conn, req)
+		if err != nil && conn.Context().Err() != nil {
+			c.removeConn(host, conn)
+		}
+		return response, err
+	})
+}
+
+func retryMarkRead(ctx context.Context, request func(context.Context) (protocol.Response, error)) (protocol.Response, error) {
+	for attempt := 0; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return protocol.Response{}, err
 		}
 
 		attemptCtx, cancel := context.WithTimeout(ctx, markRequestTimeout)
-		conn, err := c.getConn(attemptCtx, host)
-		if err == nil {
-			var response protocol.Response
-			response, err = requestOnConn(attemptCtx, conn, req)
-			if err == nil {
-				cancel()
-				return response, nil
-			}
-		}
+		response, err := request(attemptCtx)
 		cancel()
+		if err == nil {
+			return response, nil
+		}
 		if ctx.Err() != nil {
 			return protocol.Response{}, ctx.Err()
 		}
 
-		lastErr = err
 		if attempt == markMaxAttempts-1 || !isTransientReadError(err) {
 			return protocol.Response{}, err
-		}
-		if conn != nil && conn.Context().Err() != nil {
-			c.removeConn(host, conn)
 		}
 		if err := waitForRetry(ctx); err != nil {
 			return protocol.Response{}, err
 		}
 	}
-	return protocol.Response{}, lastErr
 }
 
 func requestOnConn(ctx context.Context, conn *quic.Conn, req protocol.Request) (protocol.Response, error) {
@@ -117,12 +123,26 @@ func requestOnConn(ctx context.Context, conn *quic.Conn, req protocol.Request) (
 	if err := stream.Close(); err != nil {
 		return protocol.Response{}, contextError(ctx, fmt.Errorf("close request: %w", err))
 	}
-	resp, err := protocol.ParseResponse(stream)
+	resp, err := parseMarkResponse(stream, req.Verb)
 	if err != nil {
 		return protocol.Response{}, contextError(ctx, fmt.Errorf("read response: %w", err))
 	}
 	complete = true
 	return resp, nil
+}
+
+func parseMarkResponse(r io.Reader, verb string) (protocol.Response, error) {
+	if verb != protocol.VerbList {
+		return protocol.ParseResponse(r)
+	}
+	raw, err := io.ReadAll(io.LimitReader(r, maxListBytes+1))
+	if err != nil {
+		return protocol.Response{}, err
+	}
+	if len(raw) > maxListBytes {
+		return protocol.Response{}, fmt.Errorf("LIST response exceeds %d bytes", maxListBytes)
+	}
+	return protocol.ParseResponse(bytes.NewReader(raw))
 }
 
 func (c *markReadClient) getConn(ctx context.Context, host string) (*quic.Conn, error) {
@@ -190,13 +210,13 @@ func isTransientReadError(err error) bool {
 		return false
 	}
 	var netErr net.Error
-	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true
 	}
-	message := err.Error()
+	var statelessReset *quic.StatelessResetError
 	return errors.Is(err, context.DeadlineExceeded) ||
-		strings.Contains(message, "no recent network activity") ||
-		strings.Contains(message, "connection refused") ||
-		strings.Contains(message, "connection reset") ||
-		strings.HasSuffix(message, "EOF")
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.As(err, &statelessReset)
 }

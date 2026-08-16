@@ -10,7 +10,12 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
+	"io"
 	"math/big"
+	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -39,7 +44,7 @@ func TestMarkReadClientCancelsBlockedResponse(t *testing.T) {
 
 	serverCtx, stopServer := context.WithCancel(context.Background())
 	t.Cleanup(stopServer)
-	received := make(chan struct{})
+	received := make(chan time.Time, 1)
 	go func() {
 		conn, err := listener.Accept(serverCtx)
 		if err != nil {
@@ -52,29 +57,37 @@ func TestMarkReadClientCancelsBlockedResponse(t *testing.T) {
 		if _, err := protocol.ParseRequest(stream); err != nil {
 			return
 		}
-		close(received)
+		received <- time.Now()
 		<-serverCtx.Done()
 	}()
 
 	client := newMarkReadClient(true)
 	t.Cleanup(client.Close)
 	ctx, cancel := context.WithCancel(context.Background())
+	timedOut := make(chan struct{})
+	cancelledAt := make(chan time.Time, 1)
 	go func() {
 		select {
-		case <-received:
+		case at := <-received:
+			cancelledAt <- at
 			cancel()
-		case <-time.After(time.Second):
+		case <-time.After(5 * time.Second):
+			close(timedOut)
 			cancel()
 		}
 	}()
 
-	started := time.Now()
 	_, err = client.Request(ctx, listener.Addr().String(), protocol.Request{Verb: protocol.VerbFetch, Path: "/doc.md"})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
 	}
-	if elapsed := time.Since(started); elapsed >= time.Second {
-		t.Fatalf("blocked response cancellation took %s", elapsed)
+	select {
+	case at := <-cancelledAt:
+		if elapsed := time.Since(at); elapsed >= time.Second {
+			t.Fatalf("blocked response cancellation took %s", elapsed)
+		}
+	case <-timedOut:
+		t.Fatal("server did not receive the request")
 	}
 }
 
@@ -88,6 +101,7 @@ func TestMarkReadCancellationKeepsSharedConnection(t *testing.T) {
 	serverCtx, stopServer := context.WithCancel(context.Background())
 	t.Cleanup(stopServer)
 	blocked := make(chan struct{})
+	var blockOnce sync.Once
 	go func() {
 		conn, err := listener.Accept(serverCtx)
 		if err != nil {
@@ -104,7 +118,7 @@ func TestMarkReadCancellationKeepsSharedConnection(t *testing.T) {
 					return
 				}
 				if req.Path == "/blocked.md" {
-					close(blocked)
+					blockOnce.Do(func() { close(blocked) })
 					<-serverCtx.Done()
 					return
 				}
@@ -140,6 +154,85 @@ func TestMarkReadCancellationKeepsSharedConnection(t *testing.T) {
 		t.Fatalf("blocked error = %v, want context.Canceled", err)
 	}
 }
+
+func TestRetryMarkReadAfterDroppedConnection(t *testing.T) {
+	attempts := 0
+	resp, err := retryMarkRead(context.Background(), func(context.Context) (protocol.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return protocol.Response{}, fmt.Errorf("dropped connection: %w", syscall.ECONNRESET)
+		}
+		return protocol.Response{Status: protocol.StatusOK}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 || resp.Status != protocol.StatusOK {
+		t.Fatalf("attempts = %d, response = %+v", attempts, resp)
+	}
+}
+
+func TestIsTransientReadError(t *testing.T) {
+	tests := map[string]struct {
+		err  error
+		want bool
+	}{
+		"nil":                {err: nil},
+		"deadline":           {err: context.DeadlineExceeded, want: true},
+		"eof":                {err: fmt.Errorf("read: %w", io.EOF), want: true},
+		"connection refused": {err: fmt.Errorf("dial: %w", syscall.ECONNREFUSED), want: true},
+		"connection reset":   {err: fmt.Errorf("read: %w", syscall.ECONNRESET), want: true},
+		"stateless reset":    {err: &quic.StatelessResetError{}, want: true},
+		"temporary only":     {err: temporaryOnlyError{}},
+		"ordinary":           {err: errors.New("invalid response")},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := isTransientReadError(test.err); got != test.want {
+				t.Errorf("isTransientReadError(%v) = %v, want %v", test.err, got, test.want)
+			}
+		})
+	}
+}
+
+func TestMarkReadClientRejectsOversizedList(t *testing.T) {
+	listener, err := quic.ListenAddr("127.0.0.1:0", testServerTLS(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	serverCtx, stopServer := context.WithCancel(context.Background())
+	t.Cleanup(stopServer)
+	go func() {
+		conn, err := listener.Accept(serverCtx)
+		if err != nil {
+			return
+		}
+		stream, err := conn.AcceptStream(serverCtx)
+		if err != nil {
+			return
+		}
+		if _, err := protocol.ParseRequest(stream); err != nil {
+			return
+		}
+		_, _ = (protocol.Response{Status: protocol.StatusOK, Body: strings.Repeat("x", maxListBytes)}).WriteTo(stream)
+		_ = stream.Close()
+	}()
+
+	client := newMarkReadClient(true)
+	t.Cleanup(client.Close)
+	_, err = client.Request(context.Background(), listener.Addr().String(), protocol.Request{Verb: protocol.VerbList, Path: "/"})
+	if err == nil || !strings.Contains(err.Error(), "LIST response exceeds") {
+		t.Fatalf("error = %v, want oversized LIST error", err)
+	}
+}
+
+type temporaryOnlyError struct{}
+
+func (temporaryOnlyError) Error() string   { return "temporary" }
+func (temporaryOnlyError) Timeout() bool   { return false }
+func (temporaryOnlyError) Temporary() bool { return true }
 
 func testServerTLS(t *testing.T) *tls.Config {
 	t.Helper()

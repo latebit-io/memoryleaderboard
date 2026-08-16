@@ -44,6 +44,7 @@ type fakeNav struct {
 	docs        map[string]string
 	fetches     int
 	lookupLimit int
+	listing     string
 }
 
 func (f *fakeNav) Scope(userID string) string { return "/u/" + userID }
@@ -61,6 +62,9 @@ func (f *fakeNav) Lookup(_ context.Context, scope, query string, limit int) (str
 }
 
 func (f *fakeNav) List(_ context.Context, path string) (string, error) {
+	if f.listing != "" {
+		return f.listing, nil
+	}
 	var b strings.Builder
 	for p := range f.docs {
 		if strings.HasPrefix(p, path) {
@@ -214,6 +218,21 @@ func TestLookupClampsModelLimit(t *testing.T) {
 	}
 	if nav.lookupLimit != maxLookupLimit {
 		t.Errorf("lookup limit = %d, want %d", nav.lookupLimit, maxLookupLimit)
+	}
+}
+
+func TestListBoundsTranscript(t *testing.T) {
+	nav := &fakeNav{listing: strings.Repeat("x", maxListBytes+100)}
+	run := &navRun{nav: nav, scope: "/u/u1", snippet: maxListBytes + 100}
+	out, err := run.list(context.Background(), map[string]any{"path": ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(out, "\n[truncated]") {
+		t.Fatalf("listing lacks truncation marker")
+	}
+	if got := len(strings.TrimSuffix(out, "\n[truncated]")); got != maxListBytes {
+		t.Errorf("listing kept %d bytes, want %d", got, maxListBytes)
 	}
 }
 
