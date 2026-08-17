@@ -57,7 +57,7 @@ Requirements: Go 1.26.6, local `demarkus-server` and `demarkus-token` binaries f
 go test ./...
 ./scripts/smoke.sh
 read -r -s ADAPTER_LLM_API_KEY && export ADAPTER_LLM_API_KEY
-ADAPTER_DISTILL=require LLM_BASE_URL=https://provider.example/v1 LLM_MODEL=provider-model ./scripts/nav-smoke.sh
+ADAPTER_DISTILL=require LLM_BASE_URL=https://api.minimax.io/v1 LLM_MODEL=MiniMax-M3 ./scripts/nav-smoke.sh
 ```
 
 `scripts/smoke.sh` covers contract shape, auth, and user isolation with catalog search. `scripts/nav-smoke.sh` covers live agentic retrieval and skips when no provider is available.
@@ -74,7 +74,7 @@ docker compose up -d
 docker compose ps
 ```
 
-Set real `DOMAIN`, `ACME_EMAIL`, `LLM_BASE_URL`, and `LLM_MODEL` values in `.env` before startup. `bootstrap-secrets.sh` prompts for the provider API key without printing it; automation can use `--llm-key-file`. Full DNS, TLS, backup, retention, smoke, and rollback procedures are in [docs/operations.md](docs/operations.md).
+Set real `DOMAIN` and `ACME_EMAIL` values in `.env` before startup. The checked-in LLM values select MiniMax-M3 as the validation baseline; do not call the model frozen until live distillation, navigation, quality, and load checks pass. `bootstrap-secrets.sh` prompts for the MiniMax API key without printing it; automation can use `--llm-key-file`. Full DNS, TLS, backup, retention, smoke, and rollback procedures are in [docs/operations.md](docs/operations.md).
 
 ## Configuration
 
@@ -82,8 +82,8 @@ Set real `DOMAIN`, `ACME_EMAIL`, `LLM_BASE_URL`, and `LLM_MODEL` values in `.env
 |---|---|---|
 | `ADAPTER_NAV` | `require` | Fail instead of degrading agentic search |
 | `ADAPTER_DISTILL` | `require` | Fail startup unless Add-time distillation is configured |
-| `LLM_BASE_URL` | required | OpenAI-compatible provider endpoint |
-| `LLM_MODEL` | required | Fixed model declared for the submitted version |
+| `LLM_BASE_URL` | `https://api.minimax.io/v1` candidate | OpenAI-compatible provider endpoint |
+| `LLM_MODEL` | `MiniMax-M3` candidate | Model to freeze after live validation |
 | `ADAPTER_API_KEY` | Compose secret | Public Add/Search authentication |
 | `DEMARKUS_TOKEN` | Compose secret | Capability scoped to `/u/**` |
 | `DEMARKUS_MAX_STREAMS` | `256` | QUIC stream capacity |

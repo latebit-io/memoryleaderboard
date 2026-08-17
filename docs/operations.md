@@ -8,7 +8,7 @@ Provision a Linux host with Go 1.26.6, Docker Engine and Docker Compose, full-di
 
 Create an `A` record for the submission hostname pointing to the host's public IPv4 address. Add `AAAA` only when inbound IPv6 is tested. Wait for public DNS to resolve to this host before starting Caddy.
 
-Copy `.env.example` to `.env`, then set `DOMAIN` to the DNS hostname without scheme/path and `ACME_EMAIL` to the ACME account contact. Never commit `.env`.
+Copy `.env.example` to `.env`, then set `DOMAIN` to the DNS hostname without scheme/path and `ACME_EMAIL` to the ACME account contact. Keep the MiniMax endpoint and model unchanged while validating the submission candidate. Never commit `.env`.
 
 ## Initial Deploy
 
@@ -23,6 +23,17 @@ docker compose ps
 ```
 
 For noninteractive secret bootstrap, place the real LLM provider key in a protected file and pass `--llm-key-file`. The script generates independent adapter and demarkus tokens, stores only the demarkus token hash in `demarkus-tokens.toml`, and refuses overwrite. The secret directory is `0700`; files are `0404` because non-Swarm Compose bind-mounts source files without applying declared ownership. Parent-directory traversal prevents other host users from reading them, while container UID 65532 can read each direct mount.
+
+## Model Baseline
+
+The validation candidate uses MiniMax's OpenAI-compatible API:
+
+```dotenv
+LLM_BASE_URL=https://api.minimax.io/v1
+LLM_MODEL=MiniMax-M3
+```
+
+MiniMax-M3 is not frozen for submission until live Add distillation, agentic Search, quality, and 16-worker load checks pass with these exact values. Record the final model and endpoint with the submitted version.
 
 Expected health response:
 

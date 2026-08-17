@@ -24,6 +24,12 @@ func Provider(logger *slog.Logger) llm.Provider {
 	if key := os.Getenv(APIKeyEnv); key != "" {
 		resolved.SetAPIKey(key)
 	}
+	if !resolved.HasProvider() && os.Getenv("LLM_BASE_URL") != "" {
+		// Stored credentials belong to their configured profile endpoint.
+		// Never reuse one after an explicit endpoint override.
+		logger.Warn("explicit LLM_BASE_URL requires an explicit API key", "key_env", APIKeyEnv)
+		return nil
+	}
 
 	for _, wire := range []func(*llmconfig.Resolved, *slog.Logger){wireOAuth, wireStoredKey} {
 		if resolved.HasProvider() {
