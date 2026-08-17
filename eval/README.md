@@ -6,7 +6,7 @@ Standard-library-only tooling for local adapter checks. Results are local and no
 
 The wrapper reuses `scripts/lib/harness.sh`, starts an ephemeral demarkus server and adapter, and cleans both up on exit.
 
-Run evaluator unit tests with `python3 -m unittest discover -s scripts`.
+Run evaluator unit tests with `go test ./cmd/eval`.
 
 ```sh
 scripts/eval-local.sh conformance
@@ -17,9 +17,9 @@ scripts/eval-local.sh load --adds 10 --users 2 --searches 20 --concurrency 4
 Run against an existing adapter:
 
 ```sh
-python3 scripts/eval.py --base-url http://127.0.0.1:8080 --api-key KEY conformance
-python3 scripts/eval.py --base-url http://127.0.0.1:8080 --api-key KEY quality
-python3 scripts/eval.py --base-url http://127.0.0.1:8080 --api-key KEY load
+go run ./cmd/eval --base-url http://127.0.0.1:8080 --api-key KEY conformance
+go run ./cmd/eval --base-url http://127.0.0.1:8080 --api-key KEY quality
+go run ./cmd/eval --base-url http://127.0.0.1:8080 --api-key KEY load
 ```
 
 `conformance` checks health, Add/Search shape and immediacy, numeric timestamps, string-array options, `top_k` caps through 100, finite descending scores, stable IDs, empty users, isolation, and configured auth. A check fails when the adapter accepts a core invalid payload instead of rejecting it with HTTP 400. Unknown fields and trailing JSON produce warnings by default; `--strict-invalid` promotes them to failures.

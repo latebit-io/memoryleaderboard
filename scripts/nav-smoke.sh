@@ -35,21 +35,7 @@ check "search returns 200" 'HTTPSTATUS:200' "$RESULT"
 # Two CI documents are relevant, the deployment one is not. This gates on
 # "found relevant evidence, returned no noise"; recall quality itself is
 # what the phase-4 self-eval measures, not this smoke.
-if echo "$RESULT" | python3 -c '
-import sys, json
-raw = sys.stdin.read().split("HTTPSTATUS:")[0]
-data = json.loads(raw).get("data", [])
-print(f"{len(data)} records")
-for i, r in enumerate(data):
-    body = r["content"]
-    first = body.splitlines()[0] if body else ""
-    doc_id, score = r["id"], r.get("score")
-    print(f"  {i+1}. {doc_id} score={score} {first}")
-relevant = sum(1 for r in data if "CI" in r["content"] or "flaky" in r["content"])
-noise = sum(1 for r in data if "caddy" in r["content"])
-print(f"relevant={relevant}/2 noise={noise}")
-sys.exit(0 if relevant >= 1 and noise == 0 else 1)
-'; then
+if echo "$RESULT" | "$EVAL" nav-check; then
   report "agentic search returns relevant evidence without noise" 1
 else
   report "agentic search returns relevant evidence without noise" 0

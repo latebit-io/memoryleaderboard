@@ -15,7 +15,7 @@ export ADAPTER_NAV=${ADAPTER_NAV:-off}
 export ADAPTER_DISTILL=${ADAPTER_DISTILL:-off}
 harness_start local-eval local-eval-key 180
 
-python3 "$(dirname "$0")/eval.py" \
+"$EVAL" \
   --base-url "http://$ADDR" \
   --api-key "$API_KEY" \
   --timeout 180 \

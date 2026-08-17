@@ -4,7 +4,7 @@ This runbook operates the single-host commercial Agent Memory Leaderboard submis
 
 ## DNS And Host
 
-Provision a Linux host with Docker Engine and Docker Compose, full-disk encryption for Docker volumes and backups, persistent local storage, outbound HTTPS, and inbound TCP 80/443. Do not open UDP 6309: demarkus is private to the Compose `storage` network.
+Provision a Linux host with Go 1.26.6, Docker Engine and Docker Compose, full-disk encryption for Docker volumes and backups, persistent local storage, outbound HTTPS, and inbound TCP 80/443. Do not open UDP 6309: demarkus is private to the Compose `storage` network.
 
 Create an `A` record for the submission hostname pointing to the host's public IPv4 address. Add `AAAA` only when inbound IPv6 is tested. Wait for public DNS to resolve to this host before starting Caddy.
 
@@ -72,7 +72,7 @@ Run a 16-worker load check with representative Add/Search payloads before submis
 
 ```bash
 ADAPTER_API_KEY=$(tr -d '\n' < secrets/adapter-api-key)
-python3 scripts/eval.py --base-url "https://$DOMAIN" --api-key "$ADAPTER_API_KEY" \
+go run ./cmd/eval --base-url "https://$DOMAIN" --api-key "$ADAPTER_API_KEY" \
   --timeout 130 load --adds 100 --users 1 --searches 16 --concurrency 16 --top-k 100
 ```
 
@@ -96,8 +96,12 @@ Verify the checksum and restore only into an empty demarkus volume. Set `BACKUP`
 set -euo pipefail
 : "${BACKUP:?set BACKUP to an absolute archive path}"
 COMPOSE_FILE=compose.yaml
-VOLUME=$(docker compose -f "$COMPOSE_FILE" config --format json | python3 -c \
-  'import json,sys; print(json.load(sys.stdin)["volumes"]["demarkus_data"]["name"])')
+docker compose -f "$COMPOSE_FILE" create volume-init
+INIT_CONTAINER=$(docker compose -f "$COMPOSE_FILE" ps -a -q volume-init)
+test -n "$INIT_CONTAINER"
+VOLUME=$(docker inspect --format \
+  '{{range .Mounts}}{{if eq .Destination "/demarkus-data"}}{{.Name}}{{end}}{{end}}' \
+  "$INIT_CONTAINER")
 test -n "$VOLUME"
 (cd "$(dirname "$BACKUP")" && sha256sum -c "$(basename "$BACKUP").sha256")
 docker volume inspect "$VOLUME" >/dev/null
