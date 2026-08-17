@@ -1,6 +1,6 @@
 # Hosted Operations
 
-This runbook operates the single-host commercial Agent Memory Leaderboard submission package. Commands run from the repository root unless stated otherwise.
+This runbook operates the single-host Academic hosted-API submission package. Commands run from the repository root unless stated otherwise.
 
 ## DNS And Host
 
@@ -8,11 +8,11 @@ Provision a Linux host with Go 1.26.6, Docker Engine and Docker Compose, full-di
 
 Create an `A` record for the submission hostname pointing to the host's public IPv4 address. Add `AAAA` only when inbound IPv6 is tested. Wait for public DNS to resolve to this host before starting Caddy.
 
-Copy `.env.example` to `.env`, then set `DOMAIN` to the DNS hostname without scheme/path and `ACME_EMAIL` to the ACME account contact. Never commit `.env`.
+Copy `.env.example` to `.env`, then set `DOMAIN` to the DNS hostname without scheme/path and `ACME_EMAIL` to the ACME account contact. The Academic submission model is fixed in Compose. Never commit `.env`.
 
 ## Initial Deploy
 
-Authenticate Docker to `ghcr.io` with an account authorized for the private demarkus image. The deployment pins demarkus 0.22.7 to an exact manifest digest.
+The public `ghcr.io/latebit-io/demarkus-server` package pins demarkus 0.22.7 to an exact manifest digest. No registry credentials are required to pull it.
 
 ```bash
 ./scripts/bootstrap-secrets.sh
@@ -22,7 +22,7 @@ docker compose up -d
 docker compose ps
 ```
 
-For noninteractive secret bootstrap, place the real LLM provider key in a protected file and pass `--llm-key-file`. The script generates independent adapter and demarkus tokens, stores only the demarkus token hash in `demarkus-tokens.toml`, and refuses overwrite. The secret directory is `0700`; files are `0404` because non-Swarm Compose bind-mounts source files without applying declared ownership. Parent-directory traversal prevents other host users from reading them, while container UID 65532 can read each direct mount.
+For noninteractive secret bootstrap, place the OpenAI API key in a protected file and pass `--llm-key-file`. The script generates independent adapter and demarkus tokens, stores only the demarkus token hash in `demarkus-tokens.toml`, and refuses overwrite. The secret directory is `0700`; files are `0404` because non-Swarm Compose bind-mounts source files without applying declared ownership. Parent-directory traversal prevents other host users from reading them, while container UID 65532 can read each direct mount.
 
 Expected health response:
 
@@ -171,7 +171,7 @@ This procedure depends on demarkus server 0.22.7's file layout: current document
 
 Caddy access logs and service logs go to container stdout in JSON/text form. Configure host log rotation and ship only to an access-controlled destination. Caddy removes `X-Api-Key` from access logs and automatically redacts Authorization; it does not log request bodies. Do not enable body/debug tracing in production. Treat URLs, user IDs, document paths, errors, and IP addresses as potentially sensitive metadata.
 
-Raw messages and distilled summaries are stored in ordinary Docker volumes, so the host must provide full-disk encryption; Compose does not add encryption. They are sent to the configured LLM API for distillation/navigation. Document model-provider processing, retention, region, and subprocessors in customer disclosures. Restrict host, Docker socket, backup, `.env`, and `secrets/` access. Never include secrets or customer payloads in support bundles.
+Raw messages and distilled summaries are stored in ordinary Docker volumes, so the host must provide full-disk encryption; Compose does not add encryption. They are sent to OpenAI for distillation/navigation. Document provider processing, retention, region, and subprocessors in submission and privacy disclosures. Restrict host, Docker socket, backup, `.env`, and `secrets/` access. Never include secrets or evaluation payloads in support bundles.
 
 Inspect recent logs without dumping historical customer activity:
 

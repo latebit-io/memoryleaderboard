@@ -51,20 +51,20 @@ Search returns `{"data":[...]}`. Each result can include `id`, `content`, descen
 
 ## Local Development
 
-Requirements: Go 1.26.6, local `demarkus-server` and `demarkus-token` binaries for smoke tests, and an OpenAI-compatible credential for agentic tests.
+Requirements: Go 1.26.6, local `demarkus-server` and `demarkus-token` binaries for smoke tests, and an OpenAI API key for agentic tests.
 
 ```bash
 go test ./...
 ./scripts/smoke.sh
 read -r -s ADAPTER_LLM_API_KEY && export ADAPTER_LLM_API_KEY
-ADAPTER_DISTILL=require LLM_BASE_URL=https://provider.example/v1 LLM_MODEL=provider-model ./scripts/nav-smoke.sh
+ADAPTER_DISTILL=require LLM_BASE_URL=https://api.openai.com/v1 LLM_MODEL=gpt-4o-mini ./scripts/nav-smoke.sh
 ```
 
 `scripts/smoke.sh` covers contract shape, auth, and user isolation with catalog search. `scripts/nav-smoke.sh` covers live agentic retrieval and skips when no provider is available.
 
 ## Hosted Deployment
 
-The production package is a single-host Docker Compose deployment: Caddy terminates public TLS, the adapter serves private HTTP, and demarkus 0.22.7 remains reachable only on an internal Docker network.
+The hosted Academic API package is a single-host Docker Compose deployment: Caddy terminates public TLS, the adapter serves private HTTP, and demarkus 0.22.7 remains reachable only on an internal Docker network.
 
 ```bash
 cp .env.example .env
@@ -74,7 +74,7 @@ docker compose up -d
 docker compose ps
 ```
 
-Set real `DOMAIN`, `ACME_EMAIL`, `LLM_BASE_URL`, and `LLM_MODEL` values in `.env` before startup. `bootstrap-secrets.sh` prompts for the provider API key without printing it; automation can use `--llm-key-file`. Full DNS, TLS, backup, retention, smoke, and rollback procedures are in [docs/operations.md](docs/operations.md).
+Set real `DOMAIN` and `ACME_EMAIL` values in `.env` before startup. Compose pins the Academic submission to OpenAI `gpt-4o-mini`; `bootstrap-secrets.sh` prompts for its API key without printing it, and automation can use `--llm-key-file`. Full DNS, TLS, backup, retention, smoke, and rollback procedures are in [docs/operations.md](docs/operations.md).
 
 ## Configuration
 
@@ -82,15 +82,15 @@ Set real `DOMAIN`, `ACME_EMAIL`, `LLM_BASE_URL`, and `LLM_MODEL` values in `.env
 |---|---|---|
 | `ADAPTER_NAV` | `require` | Fail instead of degrading agentic search |
 | `ADAPTER_DISTILL` | `require` | Fail startup unless Add-time distillation is configured |
-| `LLM_BASE_URL` | required | OpenAI-compatible provider endpoint |
-| `LLM_MODEL` | required | Fixed model declared for the submitted version |
+| `LLM_BASE_URL` | `https://api.openai.com/v1` | Academic submission provider endpoint |
+| `LLM_MODEL` | `gpt-4o-mini` | Model required by the Academic full-run checklist |
 | `ADAPTER_API_KEY` | Compose secret | Public Add/Search authentication |
 | `DEMARKUS_TOKEN` | Compose secret | Capability scoped to `/u/**` |
 | `DEMARKUS_MAX_STREAMS` | `256` | QUIC stream capacity |
 | `DEMARKUS_RATE_LIMIT` | `256` requests/s | Internal per-IP pacing |
 | `DEMARKUS_RATE_BURST` | `512` | Internal burst capacity |
 
-Commercial/Industry submissions are not subject to the Academic board's `gpt-4o-mini` checklist item. Keep the selected provider and model fixed for the declared version so reproduced behavior remains comparable.
+The Academic submission uses the hosted Add/Search API route and pins `gpt-4o-mini` for both distillation and navigation. Keep the Compose values and submitted commit fixed so reproduced behavior remains comparable.
 
 ## Evaluation
 
@@ -106,16 +106,18 @@ Point the official harness at `https://$DOMAIN`, use the generated adapter API k
 
 The deployment is sized for at least 16 concurrent requests, but provider quotas and host resources still need a 16-worker load check before submission. Declare limits exactly as listed in the operations guide.
 
-## Submission Notes
+## Academic Submission
 
 Submit the HTTPS base URL only, with no endpoint suffix. Supply the API key through the leaderboard's secret channel. Do not expose demarkus UDP or publish repository secret files.
 
-Declare the fixed provider/model in the commercial submission notes. This implementation returns ranked evidence, not a generated final answer.
+Submit this repository's public URL and exact commit with the hosted API. The submitted configuration uses OpenAI `gpt-4o-mini` for both Add and Search. This implementation returns ranked evidence, not a generated final answer.
 
-## Origins And Current Work
+## Method Disclosure
 
-[demarkus](https://github.com/latebit-io/demarkus) and [nib](https://github.com/latebit-io/nib) are original Latebit work. Current repository work adapts them to the leaderboard contract, adds scoped memory distillation/navigation, and packages the adapter for authenticated hosted operation. This disclosure is provenance, not an official endorsement or score claim.
+[demarkus](https://github.com/latebit-io/demarkus) is original Latebit work licensed under AGPL-3.0; the deployment pins server 0.22.7 and its public container digest. [nib](https://github.com/latebit-io/nib) is original Latebit work licensed under Apache-2.0; this adapter pins its agent and AI modules at v0.2.0.
+
+This repository is original Latebit integration work. It adapts those projects to the leaderboard Add/Search contract, adds per-user isolation, Add-time memory distillation, scoped navigation, local evaluation, and authenticated hosted operations. It does not claim or reproduce an external paper or third-party memory method.
 
 ## License
 
-Use and distribution follow this repository and its dependency licenses. Confirm commercial terms for the private demarkus image and hosted model account before deployment.
+Licensed under [Apache License 2.0](LICENSE). Dependencies retain their own licenses; the separately deployed demarkus server remains AGPL-3.0.
