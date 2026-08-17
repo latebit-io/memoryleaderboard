@@ -221,7 +221,8 @@ func runID() string {
 	if _, err := rand.Read(value); err == nil {
 		return hex.EncodeToString(value)
 	}
-	return fmt.Sprintf("%012x", time.Now().UnixNano())[:12]
+	digits := fmt.Sprintf("%012x", time.Now().UnixNano())
+	return digits[len(digits)-12:]
 }
 
 func responseDetail(res response, body any, decodeError string) string {
@@ -246,12 +247,7 @@ func joinedContents(body any) string {
 }
 
 func contains(value, substring string) bool {
-	for index := 0; index+len(substring) <= len(value); index++ {
-		if value[index:index+len(substring)] == substring {
-			return true
-		}
-	}
-	return substring == ""
+	return strings.Contains(value, substring)
 }
 
 func joinErrors(errors []string, status int) string {

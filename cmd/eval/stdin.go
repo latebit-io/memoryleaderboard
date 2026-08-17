@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -98,8 +100,17 @@ func readResponseInput(stdin io.Reader) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if marker := strings.LastIndex(string(raw), "HTTPSTATUS:"); marker >= 0 {
-		raw = raw[:marker]
+	text := string(raw)
+	marker := strings.LastIndex(text, "HTTPSTATUS:")
+	if marker < 0 {
+		return raw, nil
 	}
-	return raw, nil
+	status, err := strconv.Atoi(strings.TrimSpace(text[marker+len("HTTPSTATUS:"):]))
+	if err != nil {
+		return nil, fmt.Errorf("invalid HTTPSTATUS marker")
+	}
+	if status < 200 || status >= 300 {
+		return nil, fmt.Errorf("HTTP status %d", status)
+	}
+	return raw[:marker], nil
 }

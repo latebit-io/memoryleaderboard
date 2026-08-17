@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -204,12 +205,5 @@ func mapsEqual(value any, expected map[string]any) bool {
 }
 
 func parseDecimal(value string) (int, error) {
-	result := 0
-	for _, character := range value {
-		if character < '0' || character > '9' {
-			return 0, fmt.Errorf("not decimal")
-		}
-		result = result*10 + int(character-'0')
-	}
-	return result, nil
+	return strconv.Atoi(value)
 }

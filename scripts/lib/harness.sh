@@ -56,8 +56,7 @@ harness_start() {
     "$SCRATCH/adapter" >"$ADAPTER_LOG" 2>&1 &
   ADAPTER_PID=$!
 
-  local up=0
-  attempts=20
+  local up=0 attempts=20
   while [ "$attempts" -gt 0 ]; do
     $CURL -f "http://$ADDR/healthz" >/dev/null 2>&1 && up=1 && break
     attempts=$((attempts - 1))

@@ -96,6 +96,13 @@ Verify the checksum and restore only into an empty demarkus volume. Set `BACKUP`
 set -euo pipefail
 : "${BACKUP:?set BACKUP to an absolute archive path}"
 COMPOSE_FILE=compose.yaml
+LOCK_DIR=$(pwd)/.backup.lock
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  echo "another backup or restore is active" >&2
+  exit 1
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+trap 'exit 130' HUP INT TERM
 docker compose -f "$COMPOSE_FILE" create volume-init
 INIT_CONTAINER=$(docker compose -f "$COMPOSE_FILE" ps -a -q volume-init)
 test -n "$INIT_CONTAINER"

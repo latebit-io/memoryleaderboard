@@ -78,11 +78,11 @@ func TestPrefixes(t *testing.T) {
 
 	output.Reset()
 	errors.Reset()
-	if code := runPrefixes(strings.NewReader("not-jsonHTTPSTATUS:500"), &output, &errors); code != 1 {
-		t.Fatalf("malformed code = %d, want 1", code)
+	if code := runPrefixes(strings.NewReader(`{"data":[]}HTTPSTATUS:500`), &output, &errors); code != 1 {
+		t.Fatalf("HTTP failure code = %d, want 1", code)
 	}
-	if output.String() != "" || !strings.Contains(errors.String(), "invalid JSON") {
-		t.Fatalf("malformed stdout = %q, stderr = %q", output.String(), errors.String())
+	if output.String() != "" || !strings.Contains(errors.String(), "HTTP status 500") {
+		t.Fatalf("HTTP failure stdout = %q, stderr = %q", output.String(), errors.String())
 	}
 }
 
@@ -145,6 +145,10 @@ func TestTimeoutValidation(t *testing.T) {
 		if code := run([]string{"--timeout", value, "conformance"}, io.NopCloser(strings.NewReader("")), &stdout, &stderr); code != 2 {
 			t.Errorf("timeout %s: code = %d, want 2", value, code)
 		}
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--timeout", "0.000000001", "prefixes"}, strings.NewReader(`{"data":[]}`), &stdout, &stderr); code != 0 {
+		t.Errorf("1ns timeout: code = %d, stderr = %q", code, stderr.String())
 	}
 }
 

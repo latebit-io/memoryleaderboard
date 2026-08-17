@@ -22,7 +22,7 @@ published=0
 owns_final=0
 lock_dir=$repo/.backup.lock
 if ! mkdir "$lock_dir" 2>/dev/null; then
-	echo "another backup is active; remove stale $lock_dir only after verifying no backup is running" >&2
+	echo "another backup or restore is active; remove stale $lock_dir only after verifying neither is running" >&2
 	exit 1
 fi
 
@@ -71,9 +71,9 @@ if ! service_states=$(compose ps -a --format '{{.Service}} {{.State}}' adapter d
 	exit 1
 fi
 restart_services=$(printf '%s\n' "$service_states" | while read -r service state; do
-	case "$state" in
-	running|restarting|paused) printf '%s\n' "$service" ;;
-	esac
+	if [ "$state" = running ] || [ "$state" = restarting ] || [ "$state" = paused ]; then
+		printf '%s\n' "$service"
+	fi
 done)
 if [ -n "$service_states" ]; then
 	# Word splitting is intentional: Compose prints one service per line.

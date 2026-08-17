@@ -46,12 +46,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		root.Usage()
 		return 2
 	}
-	timeout := time.Duration(*timeoutSeconds * float64(time.Second))
-	if *timeoutSeconds <= 0 || math.IsNaN(*timeoutSeconds) || math.IsInf(*timeoutSeconds, 0) ||
-		timeout <= 0 || timeout > maxEvalTimeout {
+	seconds := *timeoutSeconds
+	if seconds < float64(time.Nanosecond)/float64(time.Second) || math.IsNaN(seconds) || math.IsInf(seconds, 0) ||
+		seconds > maxEvalTimeout.Seconds() {
 		writeLine(stderr, "ERROR --timeout must be between 1ns and 24h")
 		return 2
 	}
+	timeout := time.Duration(seconds * float64(time.Second))
 
 	mode, modeArgs := remaining[0], remaining[1:]
 	if mode == "prefixes" {
