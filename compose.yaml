@@ -74,8 +74,8 @@ services:
       ADAPTER_DISTILL: require
       DEMARKUS_HOST: demarkus:6309
       DEMARKUS_INSECURE: "1"
-      LLM_BASE_URL: ${LLM_BASE_URL:?set LLM_BASE_URL in .env}
-      LLM_MODEL: ${LLM_MODEL:?set LLM_MODEL in .env}
+      LLM_BASE_URL: https://api.openai.com/v1
+      LLM_MODEL: gpt-4o-mini
     depends_on:
       demarkus:
         condition: service_healthy
