@@ -1,2 +1,7 @@
 .mcp.json
 /adapter
+/.env
+/backups/
+/secrets/*
+!/secrets/.gitkeep
+__pycache__/

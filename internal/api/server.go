@@ -2,6 +2,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -28,10 +29,10 @@ type AddResponse struct {
 
 // SearchRequest is the harness Search payload.
 type SearchRequest struct {
-	Query   string         `json:"query"`
-	Options map[string]any `json:"options,omitempty"`
-	UserID  string         `json:"user_id"`
-	TopK    int            `json:"top_k"`
+	Query   string   `json:"query"`
+	Options []string `json:"options,omitempty"`
+	UserID  string   `json:"user_id"`
+	TopK    *int     `json:"top_k"`
 }
 
 // SearchResponse carries ranked memory evidence, most relevant first.
@@ -49,10 +50,6 @@ func NewHandler(store memory.Store) *Handler {
 	return &Handler{store: store}
 }
 
-// DefaultTopK is the benchmark's formal Search evidence count, used
-// when a request omits top_k.
-const DefaultTopK = 100
-
 // Config carries the runtime's decisions to the HTTP layer.
 type Config struct {
 	// APIKey enforces auth on /add and /search. Empty installs no auth
@@ -63,6 +60,8 @@ type Config struct {
 	// /healthz so operators and tests can see the mode without reading
 	// logs.
 	NavEnabled bool
+	// DistillEnabled reports whether Add-time LLM distillation is active.
+	DistillEnabled bool
 }
 
 // Routes registers /add and /search plus a health probe.
@@ -73,9 +72,13 @@ func Routes(e *echo.Echo, h *Handler, cfg Config) {
 	}
 	g.POST("/add", h.Add)
 	g.POST("/search", h.Search)
-	e.GET("/healthz", func(c *echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]any{"status": "ok", "nav": cfg.NavEnabled})
-	})
+	health := func(c *echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]any{
+			"status": "ok", "nav": cfg.NavEnabled, "distill": cfg.DistillEnabled,
+		})
+	}
+	e.GET("/health", health)
+	e.GET("/healthz", health)
 }
 
 // jsonErr is the single error-body shape for all endpoints.
@@ -112,10 +115,19 @@ func (h *Handler) Add(c *echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return jsonErr(c, http.StatusBadRequest, "invalid json")
 	}
-	if req.UserID == "" || req.RequestID == "" || len(req.Messages) == 0 {
-		return jsonErr(c, http.StatusBadRequest, "request_id, user_id, messages required")
+	if strings.TrimSpace(req.UserID) == "" || strings.TrimSpace(req.RequestID) == "" ||
+		strings.TrimSpace(req.SessionID) == "" || len(req.Messages) == 0 {
+		return jsonErr(c, http.StatusBadRequest, "request_id, user_id, session_id, messages required")
+	}
+	for _, message := range req.Messages {
+		if strings.TrimSpace(message.Role) == "" || strings.TrimSpace(message.Content) == "" {
+			return jsonErr(c, http.StatusBadRequest, "message role and content required")
+		}
 	}
 	if err := h.store.Add(c.Request().Context(), req.UserID, req.SessionID, req.RequestID, req.Messages); err != nil {
+		if errors.Is(err, memory.ErrAddConflict) {
+			return jsonErr(c, http.StatusConflict, err.Error())
+		}
 		// 503 is in the harness retry set; surface transient store trouble as retryable.
 		return jsonErr(c, http.StatusServiceUnavailable, err.Error())
 	}
@@ -133,19 +145,30 @@ func (h *Handler) Search(c *echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return jsonErr(c, http.StatusBadRequest, "invalid json")
 	}
-	if req.UserID == "" || req.Query == "" {
+	if strings.TrimSpace(req.UserID) == "" || strings.TrimSpace(req.Query) == "" {
 		return jsonErr(c, http.StatusBadRequest, "query, user_id required")
 	}
-	topK := req.TopK
-	if topK <= 0 {
-		topK = DefaultTopK
+	if req.TopK == nil || *req.TopK <= 0 {
+		return jsonErr(c, http.StatusBadRequest, "positive top_k required")
 	}
-	records, err := h.store.Search(c.Request().Context(), req.UserID, req.Query, topK)
+	for _, option := range req.Options {
+		if strings.TrimSpace(option) == "" {
+			return jsonErr(c, http.StatusBadRequest, "options must contain non-empty strings")
+		}
+	}
+	topK := *req.TopK
+	query := req.Query
+	if len(req.Options) > 0 {
+		query += "\n\nAnswer choices:\n- " + strings.Join(req.Options, "\n- ")
+	}
+	records, err := h.store.Search(c.Request().Context(), req.UserID, query, topK)
 	if err != nil {
 		return jsonErr(c, http.StatusServiceUnavailable, err.Error())
 	}
 	if records == nil {
 		records = []memory.Record{}
+	} else if len(records) > topK {
+		records = records[:topK]
 	}
 	return c.JSON(http.StatusOK, SearchResponse{Data: records})
 }

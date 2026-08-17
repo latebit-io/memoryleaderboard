@@ -8,7 +8,7 @@ import "context"
 type Message struct {
 	Role      string `json:"role"`
 	Content   string `json:"content"`
-	Timestamp string `json:"timestamp,omitempty"`
+	Timestamp *int64 `json:"timestamp,omitempty"`
 }
 
 // Record is one ranked memory evidence item in a Search response.

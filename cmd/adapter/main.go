@@ -40,9 +40,6 @@ func main() {
 	demarkusToken := os.Getenv("DEMARKUS_TOKEN")
 	insecure := os.Getenv("DEMARKUS_INSECURE") == "1"
 
-	base := memory.NewDemarkusStore(demarkusHost, demarkusToken, insecure)
-	defer base.Close()
-
 	// ADAPTER_NAV selects the search strategy:
 	//   auto (default) agentic search, degrading to catalog lookup
 	//   off            catalog lookup only
@@ -54,10 +51,27 @@ func main() {
 		logger.Error("invalid ADAPTER_NAV value", "value", navMode)
 		os.Exit(1)
 	}
+	distillMode := env("ADAPTER_DISTILL", "auto")
+	switch distillMode {
+	case "auto", "off", "require":
+	default:
+		logger.Error("invalid ADAPTER_DISTILL value", "value", distillMode)
+		os.Exit(1)
+	}
+	provider := llmwiring.Provider(logger)
+
+	base := memory.NewDemarkusStore(demarkusHost, demarkusToken, insecure)
+	defer base.Close()
+	if provider != nil && distillMode != "off" {
+		base.SetDistiller(memory.NewLLMDistiller(provider, 30*time.Second))
+	} else if distillMode == "require" {
+		logger.Error("ADAPTER_DISTILL=require but no LLM provider is configured")
+		os.Exit(1)
+	}
+
 	var store memory.Store = base
 	navEnabled := false
 	if navMode != "off" {
-		provider := llmwiring.Provider(logger)
 		switch {
 		case provider != nil:
 			// Leave headroom under WriteTimeout so a search that exhausts
@@ -78,7 +92,9 @@ func main() {
 	}
 
 	e := echo.New()
-	api.Routes(e, api.NewHandler(store), api.Config{APIKey: apiKey, NavEnabled: navEnabled})
+	api.Routes(e, api.NewHandler(store), api.Config{
+		APIKey: apiKey, NavEnabled: navEnabled, DistillEnabled: base.DistillationEnabled(),
+	})
 
 	server := &http.Server{
 		Addr:              addr,

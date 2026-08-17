@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "name": "synthetic-local-aml-v1",
+  "records": [
+    {
+      "id": "semantic-parser",
+      "user_id": "primary",
+      "session_id": "engineering",
+      "timestamp": 1754042400000,
+      "content": "Parser project checks must run make lint before every commit."
+    },
+    {
+      "id": "temporal-editor-old",
+      "user_id": "primary",
+      "session_id": "preferences",
+      "timestamp": 1735689600000,
+      "content": "My preferred code editor is Vim."
+    },
+    {
+      "id": "temporal-editor-new",
+      "user_id": "primary",
+      "session_id": "preferences",
+      "timestamp": 1767225600000,
+      "content": "I switched editors; my current preferred code editor is Helix, replacing Vim."
+    },
+    {
+      "id": "hop-orion-database",
+      "user_id": "primary",
+      "session_id": "orion",
+      "timestamp": 1769904000000,
+      "content": "The Orion service stores production data in PostgreSQL."
+    },
+    {
+      "id": "hop-postgres-backup",
+      "user_id": "primary",
+      "session_id": "operations",
+      "timestamp": 1770076800000,
+      "content": "PostgreSQL production backups run every day at 02:00 UTC."
+    },
+    {
+      "id": "distractor-mercury",
+      "user_id": "primary",
+      "session_id": "mercury",
+      "timestamp": 1770249600000,
+      "content": "The Mercury image pipeline runs make thumbnails after uploads."
+    },
+    {
+      "id": "negative-redis-decision",
+      "user_id": "primary",
+      "session_id": "architecture",
+      "timestamp": 1770508800000,
+      "content": "Final decision: do not use Redis for session storage; use PostgreSQL instead."
+    },
+    {
+      "id": "negative-redis-rejected",
+      "user_id": "primary",
+      "session_id": "architecture-old",
+      "timestamp": 1761955200000,
+      "content": "Rejected early proposal: use Redis for all session storage."
+    },
+    {
+      "id": "isolation-private",
+      "user_id": "secondary",
+      "session_id": "private",
+      "timestamp": 1770768000000,
+      "content": "Private launch codename is Glass Kestrel."
+    }
+  ],
+  "queries": [
+    {
+      "id": "q-semantic",
+      "user_id": "primary",
+      "scenario": "semantic",
+      "query": "What validation should happen before committing parser changes?",
+      "relevant": ["semantic-parser"],
+      "negative": []
+    },
+    {
+      "id": "q-temporal",
+      "user_id": "primary",
+      "scenario": "temporal",
+      "query": "What is my current preferred code editor?",
+      "relevant": ["temporal-editor-new"],
+      "negative": ["temporal-editor-old"]
+    },
+    {
+      "id": "q-multi-hop",
+      "user_id": "primary",
+      "scenario": "multi-hop",
+      "query": "When are backups for the Orion service database?",
+      "relevant": ["hop-orion-database", "hop-postgres-backup"],
+      "negative": []
+    },
+    {
+      "id": "q-distractor",
+      "user_id": "primary",
+      "scenario": "distractor",
+      "query": "Which command validates the parser project before commit?",
+      "relevant": ["semantic-parser"],
+      "negative": ["distractor-mercury"]
+    },
+    {
+      "id": "q-negative",
+      "user_id": "primary",
+      "scenario": "negative",
+      "query": "Should session storage use Redis?",
+      "relevant": ["negative-redis-decision"],
+      "negative": ["negative-redis-rejected"]
+    },
+    {
+      "id": "q-isolation-owner",
+      "user_id": "secondary",
+      "scenario": "isolation",
+      "query": "What is my private launch codename?",
+      "relevant": ["isolation-private"],
+      "negative": []
+    },
+    {
+      "id": "q-isolation-cross-user",
+      "user_id": "primary",
+      "scenario": "isolation",
+      "query": "What is the Glass Kestrel launch codename?",
+      "relevant": [],
+      "negative": ["isolation-private"]
+    }
+  ]
+}
