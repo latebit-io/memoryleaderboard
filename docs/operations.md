@@ -4,7 +4,7 @@ This runbook operates the single-host Academic hosted-API submission package. Co
 
 ## DNS And Host
 
-Provision a Linux host with Go 1.26.6, Docker Engine and Docker Compose, full-disk encryption for Docker volumes and backups, persistent local storage, outbound HTTPS, and inbound TCP 80/443. Do not open UDP 6309: demarkus is private to the Compose `storage` network.
+Provision a Linux host with Docker Engine and Docker Compose, full-disk encryption for Docker volumes and backups, persistent local storage, outbound HTTPS, and inbound TCP 80/443. Do not open UDP 6309: demarkus is private to the Compose `storage` network.
 
 Create an `A` record for the submission hostname pointing to the host's public IPv4 address. Add `AAAA` only when inbound IPv6 is tested. Wait for public DNS to resolve to this host before starting Caddy.
 
