@@ -1,5 +1,3 @@
-github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=
-github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
@@ -9,8 +7,6 @@ github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
 github.com/kr/text v0.2.0/go.mod h1:eLer722TekiGuMkidMxC/pM04lWEeraHUUmBw8l2grE=
 github.com/labstack/echo/v5 v5.2.1 h1:TzpIksY6zLMzV0T0ycYbvTEoj9w6o6AcL5twg182VTY=
 github.com/labstack/echo/v5 v5.2.1/go.mod h1:SyvlSdObGjRXeQfCCXW/sybkZdOOQZBmpKF0bvALaeo=
-github.com/latebit-io/demarkus/client v0.24.4 h1:3dSnFfIyMhSmgFiUUl5VUyI8E/+Jo1Rh4Dvq6+ZEcRQ=
-github.com/latebit-io/demarkus/client v0.24.4/go.mod h1:kEhoSm4yWVq/+PcWn/iMXcHs3gnWR2XYc2JQaGlcUc0=
 github.com/latebit-io/demarkus/protocol v0.11.0 h1:lAhm95lySL86L+k0Jam3/A4xCcaoK+0DRT2dXYUDTJM=
 github.com/latebit-io/demarkus/protocol v0.11.0/go.mod h1:xo6YbrzYwNXOh1sljgi1nwMV80+M3Mw9qDCI9tlZJJI=
 github.com/latebit-io/nib/agent v0.2.0 h1:jl6Q7A3dG5PFVtr/TuRIGLW3/MLghp5oIOoC6KXtoDE=

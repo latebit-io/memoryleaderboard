@@ -1,0 +1,12 @@
+.git
+.claude
+.env
+.mcp.json
+adapter
+backups
+docs
+eval
+secrets
+**/*_test.go
+scripts/*
+!scripts/adapter-entrypoint.sh

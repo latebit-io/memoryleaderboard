@@ -1,0 +1,172 @@
+name: memoryleaderboard
+
+services:
+  volume-init:
+    image: alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+    command:
+      - sh
+      - -ec
+      - chown 65532:65532 /demarkus-data /caddy-data /caddy-config
+    user: "0:0"
+    network_mode: none
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    volumes:
+      - demarkus_data:/demarkus-data
+      - caddy_data:/caddy-data
+      - caddy_config:/caddy-config
+    restart: "no"
+
+  demarkus:
+    image: ghcr.io/latebit-io/demarkus-server:0.22.7@sha256:bb42d2b2f322d08dc30248b3ec659882dea2c2f3ec2068470a28705ff0f5a854
+    environment:
+      DEMARKUS_ROOT: /data
+      DEMARKUS_PORT: "6309"
+      DEMARKUS_TOKENS: /run/secrets/demarkus_tokens
+      DEMARKUS_MAX_STREAMS: "256"
+      DEMARKUS_RATE_LIMIT: "256"
+      DEMARKUS_RATE_BURST: "512"
+      DEMARKUS_IDLE_TIMEOUT: 2m
+      DEMARKUS_REQUEST_TIMEOUT: 30s
+      DEMARKUS_LOG_FORMAT: json
+      DEMARKUS_LOG_LEVEL: info
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
+    secrets:
+      - source: demarkus_tokens
+        target: demarkus_tokens
+        mode: 0444
+    volumes:
+      - demarkus_data:/data
+    expose:
+      - "6309/udp"
+    networks:
+      - storage
+    healthcheck:
+      test: ["CMD", "/demarkus", "-insecure", "-no-cache", "mark://localhost:6309/.well-known/agent-manifest.md"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    init: true
+    read_only: true
+    user: "65532:65532"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    stop_grace_period: 15s
+
+  adapter:
+    image: ${ADAPTER_IMAGE:-memoryleaderboard-adapter:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      ADAPTER_ADDR: :8080
+      ADAPTER_NAV: require
+      ADAPTER_DISTILL: require
+      DEMARKUS_HOST: demarkus:6309
+      DEMARKUS_INSECURE: "1"
+      LLM_BASE_URL: ${LLM_BASE_URL:?set LLM_BASE_URL in .env}
+      LLM_MODEL: ${LLM_MODEL:?set LLM_MODEL in .env}
+    depends_on:
+      demarkus:
+        condition: service_healthy
+    secrets:
+      - source: adapter_api_key
+        target: adapter_api_key
+        mode: 0444
+      - source: demarkus_token
+        target: demarkus_token
+        mode: 0444
+      - source: llm_api_key
+        target: llm_api_key
+        mode: 0444
+    expose:
+      - "8080"
+    networks:
+      - edge
+      - storage
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 5 -O - http://127.0.0.1:8080/healthz | grep -q '\"status\":\"ok\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=65532,gid=65532
+    user: "65532:65532"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    stop_grace_period: 125s
+
+  caddy:
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
+      adapter:
+        condition: service_healthy
+    ports:
+      - "80:8080"
+      - "443:8443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 5 -O /dev/null http://127.0.0.1:2019/config/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=65532,gid=65532
+    user: "65532:65532"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+networks:
+  edge:
+  storage:
+    internal: true
+
+volumes:
+  demarkus_data:
+  caddy_data:
+  caddy_config:
+
+secrets:
+  adapter_api_key:
+    file: ./secrets/adapter-api-key
+  demarkus_token:
+    file: ./secrets/demarkus-token
+  demarkus_tokens:
+    file: ./secrets/demarkus-tokens.toml
+  llm_api_key:
+    file: ./secrets/llm-api-key

@@ -2,15 +2,19 @@ package memory
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base32"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
-	"github.com/latebit-io/demarkus/client/fetch"
 	"github.com/latebit-io/demarkus/protocol"
 )
 
@@ -22,16 +26,15 @@ const fetchConcurrency = 16
 // tagging and lookup-only ranking; the distill/nav agents replace both.
 // It also implements [Navigator] for agentic strategies.
 type DemarkusStore struct {
-	client *fetch.Client
-	reader *markReadClient
-	host   string
-	token  string
+	reader    *markReadClient
+	host      string
+	token     string
+	distiller Distiller
 }
 
 // NewDemarkusStore connects to a demarkus server, e.g. host "localhost:6309".
 func NewDemarkusStore(host, token string, insecure bool) *DemarkusStore {
 	return &DemarkusStore{
-		client: fetch.NewClient(fetch.Options{Insecure: insecure}),
 		reader: newMarkReadClient(insecure),
 		host:   host,
 		token:  token,
@@ -40,8 +43,15 @@ func NewDemarkusStore(host, token string, insecure bool) *DemarkusStore {
 
 // Close releases pooled connections.
 func (s *DemarkusStore) Close() {
-	s.client.Close()
 	s.reader.Close()
+}
+
+func (s *DemarkusStore) SetDistiller(distiller Distiller) {
+	s.distiller = distiller
+}
+
+func (s *DemarkusStore) DistillationEnabled() bool {
+	return s.distiller != nil
 }
 
 // Scope returns the root path of a user's documents.
@@ -98,8 +108,17 @@ func (s *DemarkusStore) FetchRecord(ctx context.Context, path string) (Record, e
 	return Record{
 		ID:        path,
 		Content:   res.Body,
-		CreatedAt: res.Metadata["modified"],
+		CreatedAt: firstNonempty(res.Metadata["source-end"], res.Metadata["modified"]),
 	}, nil
+}
+
+func firstNonempty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (s *DemarkusStore) readRequest(verb, path string) protocol.Request {
@@ -124,33 +143,166 @@ func (s *DemarkusStore) docPath(userID, sessionID, requestID string) string {
 	return fmt.Sprintf("%s/sessions/%s/%s.md", s.Scope(userID), sanitize(sessionID), sanitize(requestID))
 }
 
-// Add publishes the conversation verbatim. Unconditional publish keeps
-// harness retries of the same request_id idempotent.
-func (s *DemarkusStore) Add(_ context.Context, userID, sessionID, requestID string, msgs []Message) error {
-	title := fmt.Sprintf("Session %s: %s", sessionID, requestID)
+var ErrAddConflict = errors.New("request_id already contains different memory")
+
+// Add stores distilled retrieval metadata alongside lossless raw messages.
+func (s *DemarkusStore) Add(ctx context.Context, userID, sessionID, requestID string, msgs []Message) error {
+	path := s.docPath(userID, sessionID, requestID)
+	legacyBody := renderLegacyMemory(sessionID, requestID, msgs)
+	sourceHash, err := messageHash(msgs)
+	if err != nil {
+		return err
+	}
+	// A retry with distillation should not pay for another LLM call.
+	if s.distiller != nil {
+		idempotent, checkErr := s.checkExisting(ctx, path, sourceHash, legacyBody)
+		if checkErr != nil || idempotent {
+			return checkErr
+		}
+	}
+
+	distilled := fallbackDistillation(msgs, sessionID, requestID)
+	if s.distiller != nil {
+		candidate, distillErr := s.distiller.Distill(ctx, msgs)
+		if distillErr != nil {
+			slog.Warn("memory distillation failed; using deterministic metadata", "request_id", requestID, "err", distillErr)
+		} else {
+			distilled = candidate
+		}
+	}
+
+	meta := map[string]string{
+		"title":       distilled.Title,
+		"tags":        strings.Join(distilled.Tags, ","),
+		"importance":  strconv.FormatFloat(distilled.Importance, 'f', -1, 64),
+		"source-hash": sourceHash,
+	}
+	if start, end, ok := sourceTimes(msgs); ok {
+		meta["source-start"] = start
+		meta["source-end"] = end
+	}
+	requestMeta := make(map[string]string, len(meta)+2)
+	for key, value := range meta {
+		requestMeta[key] = value
+	}
+	requestMeta["expected-version"] = "0"
+	if s.token != "" {
+		requestMeta["auth"] = s.token
+	}
+	res, err := s.reader.Request(ctx, s.host, protocol.Request{
+		Verb: protocol.VerbPublish, Path: path, Metadata: requestMeta,
+		Body: renderMemory(distilled, msgs),
+	})
+	if err != nil {
+		return err
+	}
+	if res.Status == protocol.StatusConflict {
+		idempotent, checkErr := s.checkExisting(ctx, path, sourceHash, legacyBody)
+		if checkErr != nil || idempotent {
+			return checkErr
+		}
+	}
+	if res.Status != protocol.StatusOK && res.Status != protocol.StatusCreated {
+		return fmt.Errorf("publish %s: status %s", path, res.Status)
+	}
+	return nil
+}
+
+func (s *DemarkusStore) checkExisting(ctx context.Context, path, sourceHash, legacyBody string) (bool, error) {
+	res, err := s.reader.Request(ctx, s.host, s.readRequest(protocol.VerbFetch, path))
+	if err != nil {
+		return false, err
+	}
+	switch res.Status {
+	case protocol.StatusNotFound:
+		return false, nil
+	case protocol.StatusOK:
+		if res.Metadata["source-hash"] == sourceHash ||
+			(res.Metadata["source-hash"] == "" && res.Body == legacyBody) {
+			return true, nil
+		}
+		return false, fmt.Errorf("%w: %s", ErrAddConflict, path)
+	default:
+		return false, fmt.Errorf("fetch %s before publish: status %s", path, res.Status)
+	}
+}
+
+func renderLegacyMemory(sessionID, requestID string, msgs []Message) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# %s\n\n", title)
+	fmt.Fprintf(&b, "# Session %s: %s\n\n", sessionID, requestID)
+	for _, message := range msgs {
+		if message.Timestamp != nil {
+			fmt.Fprintf(&b, "- [%d] **%s**: %s\n", *message.Timestamp, message.Role, message.Content)
+		} else {
+			fmt.Fprintf(&b, "- **%s**: %s\n", message.Role, message.Content)
+		}
+	}
+	return b.String()
+}
+
+func messageHash(msgs []Message) (string, error) {
+	raw, err := json.Marshal(msgs)
+	if err != nil {
+		return "", fmt.Errorf("marshal source messages: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	return fmt.Sprintf("sha256-%x", sum), nil
+}
+
+func sourceTimes(msgs []Message) (string, string, bool) {
+	var minTime, maxTime int64
+	found := false
+	for _, message := range msgs {
+		if message.Timestamp == nil {
+			continue
+		}
+		value := *message.Timestamp
+		if !found || value < minTime {
+			minTime = value
+		}
+		if !found || value > maxTime {
+			maxTime = value
+		}
+		found = true
+	}
+	if !found {
+		return "", "", false
+	}
+	return time.UnixMilli(minTime).UTC().Format(time.RFC3339Nano),
+		time.UnixMilli(maxTime).UTC().Format(time.RFC3339Nano), true
+}
+
+func fallbackDistillation(msgs []Message, sessionID, requestID string) Distillation {
+	title := fmt.Sprintf("Session %s: %s", sessionID, requestID)
+	for _, message := range msgs {
+		if content := strings.Join(strings.Fields(message.Content), " "); content != "" {
+			runes := []rune(content)
+			if len(runes) > 96 {
+				content = string(runes[:96]) + "..."
+			}
+			title = content
+			break
+		}
+	}
+	return Distillation{Title: title, Tags: naiveTags(msgs), Importance: 0.5}
+}
+
+func renderMemory(distilled Distillation, msgs []Message) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s\n\n", distilled.Title)
+	if distilled.Summary != "" {
+		fmt.Fprintf(&b, "## Distilled memory\n\n%s\n\n", distilled.Summary)
+	}
+	b.WriteString("## Raw messages\n\n")
 	for _, m := range msgs {
-		if m.Timestamp != "" {
-			fmt.Fprintf(&b, "- [%s] **%s**: %s\n", m.Timestamp, m.Role, m.Content)
+		if m.Timestamp != nil {
+			stamp := time.UnixMilli(*m.Timestamp).UTC().Format(time.RFC3339Nano)
+			fmt.Fprintf(&b, "- [%s] **%s**: %s\n", stamp, m.Role, m.Content)
 		} else {
 			fmt.Fprintf(&b, "- **%s**: %s\n", m.Role, m.Content)
 		}
 	}
-	meta := map[string]string{
-		"title":      title,
-		"tags":       strings.Join(naiveTags(msgs), ","),
-		"importance": "0.5",
-	}
-	path := s.docPath(userID, sessionID, requestID)
-	res, err := s.client.Publish(s.host, path, b.String(), s.token, -1, meta)
-	if err != nil {
-		return err
-	}
-	if st := res.Response.Status; st != protocol.StatusOK && st != protocol.StatusCreated {
-		return fmt.Errorf("publish %s: status %s", path, st)
-	}
-	return nil
+	return b.String()
 }
 
 // Search ranks via catalog lookup under the user's prefix, then fetches
@@ -185,7 +337,6 @@ func (s *DemarkusStore) Search(ctx context.Context, userID, query string, topK i
 				errs[i] = err
 				return
 			}
-			rec.Score = h.importance
 			records[i], found[i] = rec, true
 		}(i, h)
 	}
@@ -205,16 +356,15 @@ func (s *DemarkusStore) Search(ctx context.Context, userID, query string, topK i
 	if len(out) == 0 && fetchErr != nil {
 		return nil, fetchErr
 	}
-	return out, nil
+	return withRankScores(out), nil
 }
 
 type lookupHit struct {
-	path       string
-	importance float64
+	path string
 }
 
-// parseLookupTable extracts (path, importance) rows from the markdown
-// table a LOOKUP returns, preserving server rank order.
+// parseLookupTable extracts paths from the markdown table a LOOKUP returns,
+// preserving server rank order.
 func parseLookupTable(body string) []lookupHit {
 	var hits []lookupHit
 	for line := range strings.SplitSeq(body, "\n") {
@@ -227,8 +377,7 @@ func parseLookupTable(body string) []lookupHit {
 			continue
 		}
 		path := strings.TrimSpace(cells[1])
-		imp, _ := strconv.ParseFloat(strings.TrimSpace(cells[2]), 64)
-		hits = append(hits, lookupHit{path: path, importance: imp})
+		hits = append(hits, lookupHit{path: path})
 	}
 	return hits
 }

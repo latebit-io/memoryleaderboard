@@ -4,12 +4,13 @@
 # check/refute, and finish with harness_report.
 #
 # harness_start <label> <api-key> [curl-max-time]
-# Exports: SCRATCH, ADDR, CURL, API_KEY. Also sets SERVER_LOG, ADAPTER_LOG.
+# Exports: SCRATCH, ADDR, CURL, API_KEY, EVAL. Also sets SERVER_LOG, ADAPTER_LOG.
 # Honors ADAPTER_NAV (auto|off|require) from the caller's environment.
 
 SCRATCH=$(mktemp -d)
 SERVER_PID=""
 ADAPTER_PID=""
+EVAL=""
 harness_cleanup() {
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
   [ -n "$ADAPTER_PID" ] && kill "$ADAPTER_PID" 2>/dev/null || true
@@ -48,13 +49,19 @@ harness_start() {
 
   # Built binary, not `go run`: killing go run's PID orphans the child.
   (cd "$repo" && go build -o "$SCRATCH/adapter" ./cmd/adapter)
+  (cd "$repo" && go build -o "$SCRATCH/eval" ./cmd/eval)
+  EVAL="$SCRATCH/eval"
   # ADAPTER_NAV passes through from the caller's environment.
   ADAPTER_ADDR=$ADDR DEMARKUS_HOST=localhost:$port DEMARKUS_INSECURE=1 DEMARKUS_TOKEN="$token" ADAPTER_API_KEY="$api_key" \
     "$SCRATCH/adapter" >"$ADAPTER_LOG" 2>&1 &
   ADAPTER_PID=$!
 
-  local up=0 i
-  for i in $(seq 1 20); do $CURL -f "http://$ADDR/healthz" >/dev/null 2>&1 && up=1 && break; sleep 0.5; done
+  local up=0 attempts=20
+  while [ "$attempts" -gt 0 ]; do
+    $CURL -f "http://$ADDR/healthz" >/dev/null 2>&1 && up=1 && break
+    attempts=$((attempts - 1))
+    sleep 0.5
+  done
   if [ "$up" != 1 ]; then
     echo "adapter never became healthy" >&2
     tail -5 "$ADAPTER_LOG" >&2
@@ -89,15 +96,5 @@ harness_report() {
 # prefixes reads a search response on stdin and prints the sorted set of
 # distinct /u/<id> subtrees its record ids live under.
 prefixes() {
-  python3 -c '
-import sys, json
-raw = sys.stdin.read()
-body = raw.split("HTTPSTATUS:")[0]
-try:
-    data = json.loads(body).get("data", [])
-except json.JSONDecodeError:
-    sys.exit(0)
-seen = sorted({"/".join(r["id"].split("/")[:3]) for r in data})
-print(" ".join(seen))
-'
+  "$EVAL" prefixes
 }
