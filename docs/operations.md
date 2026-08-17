@@ -80,30 +80,47 @@ Watch provider rate-limit responses, CPU, memory, disk latency, and p95 latency.
 
 ## Backups
 
-Backups are filesystem-consistent and require brief downtime.
+Backups are filesystem-consistent and cause brief automatic downtime.
 
 ```bash
-docker compose stop adapter demarkus
 ./scripts/backup.sh
-docker compose start demarkus adapter
 ```
 
-The script writes mode-`0600` timestamped gzip and SHA-256 files under ignored `backups/`, refuses overwrite, and refuses to run while adapter or demarkus is active. Copy both files to encrypted off-host storage with access controls matching production data.
+If the deployment was started with `docker compose -p NAME`, export `COMPOSE_PROJECT_NAME=NAME` before backup or restore commands. The script serializes backups with `.backup.lock`, records which data services are active, stops both before reading the volume, and reliably restarts previously active services on success, failure, or interruption. It writes mode-`0600` archive and checksum temporary files under ignored `backups/`, then publishes both only after successful completion. Copy both files to encrypted off-host storage with access controls matching production data.
 
 ### Restore
 
 Verify the checksum and restore only into an empty demarkus volume. Set `BACKUP` to the selected archive's absolute path.
 
 ```bash
+set -euo pipefail
+: "${BACKUP:?set BACKUP to an absolute archive path}"
+COMPOSE_FILE=compose.yaml
+VOLUME=$(docker compose -f "$COMPOSE_FILE" config --format json | python3 -c \
+  'import json,sys; print(json.load(sys.stdin)["volumes"]["demarkus_data"]["name"])')
+test -n "$VOLUME"
 (cd "$(dirname "$BACKUP")" && sha256sum -c "$(basename "$BACKUP").sha256")
-docker compose down
-docker volume rm memoryleaderboard_demarkus_data
+docker volume inspect "$VOLUME" >/dev/null
+docker compose -f "$COMPOSE_FILE" down
+docker volume rm "$VOLUME"
+if docker volume inspect "$VOLUME" >/dev/null 2>&1; then
+  echo "volume still exists after removal: $VOLUME" >&2
+  exit 1
+fi
+if ! VOLUMES=$(docker volume ls --quiet --filter "name=^${VOLUME}$"); then
+  echo "failed to verify volume removal" >&2
+  exit 1
+fi
+if printf '%s\n' "$VOLUMES" | grep -Fx "$VOLUME" >/dev/null; then
+  echo "volume still listed after removal: $VOLUME" >&2
+  exit 1
+fi
 BACKUP_DIR=$(dirname "$BACKUP")
 BACKUP_NAME=$(basename "$BACKUP")
-docker compose run --rm --no-deps --user 0:0 \
+docker compose -f "$COMPOSE_FILE" run --rm --no-deps --user 0:0 \
   -e "BACKUP_NAME=$BACKUP_NAME" -v "$BACKUP_DIR:/restore:ro" volume-init \
   sh -ec 'tar -C /demarkus-data -xzf "/restore/$BACKUP_NAME"'
-docker compose up -d
+docker compose -f "$COMPOSE_FILE" up -d
 ```
 
 Check `/healthz`, authenticate an Add/Search smoke, and inspect demarkus startup logs for catalog/hash-index errors.

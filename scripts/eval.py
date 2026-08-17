@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import itertools
 import json
 import math
 import os
@@ -134,11 +135,26 @@ def result_errors(body: Any, top_k: int) -> list[str]:
             scores.append(float(score))
         if "created_at" in record and not isinstance(record["created_at"], str):
             errors.append(f"data[{index}].created_at must be a string when present")
-    if len(scores) == len(data) and any(a < b for a, b in zip(scores, scores[1:])):
+    if len(scores) == len(data) and any(a < b for a, b in itertools.pairwise(scores)):
         errors.append("scores are not descending (non-increasing)")
     if len(ids) != len(set(ids)):
         errors.append("result IDs must be unique")
     return errors
+
+
+def data_items(body: Any) -> list[dict[str, Any]]:
+    if not isinstance(body, dict) or not isinstance(body.get("data"), list):
+        return []
+    return [item for item in body["data"] if isinstance(item, dict)]
+
+
+def content_items(body: Any) -> list[dict[str, Any]]:
+    return [item for item in data_items(body) if isinstance(item.get("content"), str)]
+
+
+def metric_cutoff_label(queries: list[dict[str, Any]], default: int) -> str:
+    cutoffs = sorted({query.get("top_k", default) for query in queries})
+    return str(cutoffs[0]) if len(cutoffs) == 1 else "mixed"
 
 
 def add_payload(request_id: str, user_id: str, session_id: str, content: str, timestamp: int) -> dict[str, Any]:
@@ -200,7 +216,7 @@ def conformance(args: argparse.Namespace, client: Client) -> int:
     searched = client.request("/search", search_payload)
     search_body, search_error = decode(searched)
     schema_errors = result_errors(search_body, 100) if searched.status == 200 and search_body is not None else []
-    contents = "\n".join(r.get("content", "") for r in search_body.get("data", [])) if isinstance(search_body, dict) else ""
+    contents = "\n".join(item["content"] for item in content_items(search_body))
     checks.check(
         "immediate Search accepts string options and top_k=100",
         searched.status == 200 and marker_a in contents,
@@ -223,8 +239,8 @@ def conformance(args: argparse.Namespace, client: Client) -> int:
 
     repeated = client.request("/search", search_payload)
     repeated_body, repeated_error = decode(repeated)
-    first_ids = [r.get("id") for r in search_body.get("data", [])] if isinstance(search_body, dict) else None
-    repeated_ids = [r.get("id") for r in repeated_body.get("data", [])] if isinstance(repeated_body, dict) else None
+    first_ids = [item.get("id") for item in data_items(search_body)] if isinstance(search_body, dict) else None
+    repeated_ids = [item.get("id") for item in data_items(repeated_body)] if isinstance(repeated_body, dict) else None
     checks.check(
         "stable result IDs and order",
         searched.status == 200 and repeated.status == 200 and first_ids == repeated_ids,
@@ -242,7 +258,7 @@ def conformance(args: argparse.Namespace, client: Client) -> int:
     isolated = client.request("/search", {"query": marker_b, "user_id": user_a, "top_k": 100})
     isolated_body, isolated_error = decode(isolated)
     isolated_contents = (
-        "\n".join(r.get("content", "") for r in isolated_body.get("data", []))
+        "\n".join(item["content"] for item in content_items(isolated_body))
         if isinstance(isolated_body, dict)
         else marker_b
     )
@@ -278,6 +294,7 @@ def conformance(args: argparse.Namespace, client: Client) -> int:
         ("object options", "/search", {"query": "x", "options": {"A": "x"}, "user_id": user_a, "top_k": 1}, None),
         ("missing top_k", "/search", {"query": "x", "user_id": user_a}, None),
         ("non-positive top_k", "/search", {"query": "x", "user_id": user_a, "top_k": 0}, None),
+        ("oversized top_k", "/search", {"query": "x", "user_id": user_a, "top_k": 101}, None),
     ]
     for name, path, payload, raw in invalid_cases:
         response = client.request(path, payload, raw=raw)
@@ -523,18 +540,19 @@ def quality(args: argparse.Namespace, client: Client) -> int:
         negative_total += query_negative
         isolation_total += query_isolation
         print(
-            f"QUERY id={query['id']} scenario={query['scenario']} latency_ms={response.elapsed_ms:.1f} "
+            f"QUERY id={query['id']} scenario={query['scenario']} top_k={top_k} latency_ms={response.elapsed_ms:.1f} "
             f"returned={len(data)} relevant={len(hits)}/{len(relevant)} negative={query_negative} "
             f"unmapped={query_unmapped} isolation={query_isolation}"
         )
 
     denominator = positive_queries or 1
     result_denominator = returned_total or 1
+    cutoff_label = metric_cutoff_label(fixture["queries"], args.top_k)
     metrics = {
-        f"recall_any@{args.top_k}": recall_any_sum / denominator,
-        f"recall_all@{args.top_k}": recall_all_sum / denominator,
-        f"evidence_recall@{args.top_k}": evidence_found / evidence_total if evidence_total else 0.0,
-        f"nDCG@{args.top_k}": ndcg_sum / denominator,
+        f"recall_any@{cutoff_label}": recall_any_sum / denominator,
+        f"recall_all@{cutoff_label}": recall_all_sum / denominator,
+        f"evidence_recall@{cutoff_label}": evidence_found / evidence_total if evidence_total else 0.0,
+        f"nDCG@{cutoff_label}": ndcg_sum / denominator,
         "MRR": mrr_sum / denominator,
         "unmapped_rate": unmapped_total / result_denominator,
         "negative_rate": negative_total / result_denominator,

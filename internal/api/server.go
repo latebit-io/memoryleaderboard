@@ -11,6 +11,9 @@ import (
 	"github.com/latebit-io/memoryleaderboard/internal/memory"
 )
 
+// maxTopK bounds Search fan-out; the benchmark contract never exceeds 100.
+const maxTopK = 100
+
 // AddRequest is the harness Add payload.
 type AddRequest struct {
 	RequestID string           `json:"request_id"`
@@ -148,8 +151,8 @@ func (h *Handler) Search(c *echo.Context) error {
 	if strings.TrimSpace(req.UserID) == "" || strings.TrimSpace(req.Query) == "" {
 		return jsonErr(c, http.StatusBadRequest, "query, user_id required")
 	}
-	if req.TopK == nil || *req.TopK <= 0 {
-		return jsonErr(c, http.StatusBadRequest, "positive top_k required")
+	if req.TopK == nil || *req.TopK <= 0 || *req.TopK > maxTopK {
+		return jsonErr(c, http.StatusBadRequest, "top_k must be between 1 and 100")
 	}
 	for _, option := range req.Options {
 		if strings.TrimSpace(option) == "" {

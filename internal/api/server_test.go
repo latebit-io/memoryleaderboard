@@ -194,11 +194,12 @@ func TestSearchContractFields(t *testing.T) {
 	}
 
 	for name, body := range map[string]string{
-		"object options": `{"query":"q","options":{"a":"one"},"user_id":"u1","top_k":100}`,
-		"missing top_k":  `{"query":"q","user_id":"u1"}`,
-		"zero top_k":     `{"query":"q","user_id":"u1","top_k":0}`,
-		"negative top_k": `{"query":"q","user_id":"u1","top_k":-1}`,
-		"empty option":   `{"query":"q","options":[""],"user_id":"u1","top_k":100}`,
+		"object options":  `{"query":"q","options":{"a":"one"},"user_id":"u1","top_k":100}`,
+		"missing top_k":   `{"query":"q","user_id":"u1"}`,
+		"zero top_k":      `{"query":"q","user_id":"u1","top_k":0}`,
+		"negative top_k":  `{"query":"q","user_id":"u1","top_k":-1}`,
+		"oversized top_k": `{"query":"q","user_id":"u1","top_k":101}`,
+		"empty option":    `{"query":"q","options":[""],"user_id":"u1","top_k":100}`,
 	} {
 		resp := post(t, srv.URL+"/search", body, nil)
 		_ = resp.Body.Close()
@@ -211,7 +212,11 @@ func TestSearchContractFields(t *testing.T) {
 func TestHealthPathsAreUnauthenticated(t *testing.T) {
 	srv := newTestServer(t, &fakeStore{}, "sekrit")
 	for _, path := range []string{"/health", "/healthz"} {
-		resp, err := http.Get(srv.URL + path)
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -153,9 +153,12 @@ func (s *DemarkusStore) Add(ctx context.Context, userID, sessionID, requestID st
 	if err != nil {
 		return err
 	}
-	idempotent, err := s.checkExisting(ctx, path, sourceHash, legacyBody)
-	if err != nil || idempotent {
-		return err
+	// A retry with distillation should not pay for another LLM call.
+	if s.distiller != nil {
+		idempotent, checkErr := s.checkExisting(ctx, path, sourceHash, legacyBody)
+		if checkErr != nil || idempotent {
+			return checkErr
+		}
 	}
 
 	distilled := fallbackDistillation(msgs, sessionID, requestID)

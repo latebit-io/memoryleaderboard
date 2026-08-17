@@ -6,6 +6,8 @@ Standard-library-only tooling for local adapter checks. Results are local and no
 
 The wrapper reuses `scripts/lib/harness.sh`, starts an ephemeral demarkus server and adapter, and cleans both up on exit.
 
+Run evaluator unit tests with `python3 -m unittest discover -s scripts`.
+
 ```sh
 scripts/eval-local.sh conformance
 ADAPTER_NAV=off scripts/eval-local.sh quality
@@ -20,7 +22,7 @@ python3 scripts/eval.py --base-url http://127.0.0.1:8080 --api-key KEY quality
 python3 scripts/eval.py --base-url http://127.0.0.1:8080 --api-key KEY load
 ```
 
-`conformance` checks health, Add/Search shape and immediacy, numeric timestamps, string-array options, `top_k` caps through 100, finite descending scores, stable IDs, empty users, isolation, and configured auth. Core invalid payload acceptance fails. Unknown fields and trailing JSON produce warnings by default; `--strict-invalid` promotes them to failures.
+`conformance` checks health, Add/Search shape and immediacy, numeric timestamps, string-array options, `top_k` caps through 100, finite descending scores, stable IDs, empty users, isolation, and configured auth. A check fails when the adapter accepts a core invalid payload instead of rejecting it with HTTP 400. Unknown fields and trailing JSON produce warnings by default; `--strict-invalid` promotes them to failures.
 
 `quality` validates and loads the native fixture, injects `[[AML_SOURCE:id]]` markers, maps returned evidence to sources, and reports per-query latency, `recall_any@k`, `recall_all@k`, `evidence_recall@k`, `nDCG@k`, MRR, unmapped rate, and negative rate. Quality values do not control exit status; HTTP, schema, fixture, and isolation failures do.
 
