@@ -43,7 +43,7 @@ curl -fsS http://localhost:8080/search \
   -d '{"query":"deployment safeguards","user_id":"user-001","top_k":5}'
 ```
 
-Search returns `{"data":[...]}`. Each result can include `id`, `content`, descending rank hint `score`, and source-derived `created_at`. `top_k` must be positive.
+Search returns `{"data":[...]}`. Each result can include `id`, `content`, descending rank hint `score`, and source-derived `created_at`. `top_k` must be between 1 and 100.
 
 ### Health
 
@@ -108,7 +108,14 @@ The deployment is sized for at least 16 concurrent requests, but provider quotas
 
 ## Academic Submission
 
-Submit the HTTPS base URL only, with no endpoint suffix. Supply the API key through the leaderboard's secret channel. Do not expose demarkus UDP or publish repository secret files.
+For the hosted API application, submit these separate URLs:
+
+- Add: `https://benchmark.demarkus.io/add`
+- Search: `https://benchmark.demarkus.io/search`
+- Health: `https://benchmark.demarkus.io/health`
+- Authentication: `X-Api-Key`
+
+Supply the Memory System Key only through the leaderboard's encrypted application field. Do not expose demarkus UDP or publish repository secret files.
 
 Submit this repository's public URL and exact commit with the hosted API. The submitted configuration uses OpenAI `gpt-4o-mini` for both Add and Search. This implementation returns ranked evidence, not a generated final answer.
 
