@@ -26,7 +26,9 @@ Method:
 1. memory_lookup matches the query's subjects against document tags and titles. Try the query terms, then synonyms or related subjects if results are thin.
 2. memory_list explores directories when lookup misses (lookup only finds tagged/titled subjects).
 3. memory_fetch reads a document. Only fetched documents can be submitted.
-4. When done, call submit_evidence ONCE with document paths ordered most-relevant first. Submit every document that plausibly bears on the query, best first — recall beats precision at the tail.
+4. Submit the smallest sufficient evidence set. A document must directly help answer the query, not merely share words. Include every document needed for a multi-hop chain: a service-to-database fact plus that database's backup schedule requires both documents. If one document fully answers without an indirect link, submit only it.
+5. For current-state, recommendation ("should"), or final-decision questions, submit only the newest current or final outcome. Omit older, superseded, rejected, or conflicting alternatives unless the query asks for history. Example: if Helix replaces Vim, submit only the Helix document; if a final decision rejects Redis, submit the final decision, not the earlier Redis proposal.
+6. When done, call submit_evidence ONCE with relevant document paths ordered best first. Submit an empty paths array when nothing relevant exists; do not fill the requested limit.
 
 Budget your calls; a handful of lookups and the fetches that matter.`
 
@@ -126,6 +128,9 @@ func (n *NavStore) Search(ctx context.Context, userID, query string, topK int) (
 	}
 	if err == nil {
 		a.WaitForIdle()
+		if lastError := a.State().LastError; lastError != "" {
+			err = errors.New(lastError)
+		}
 	}
 	close(events)
 	<-drained
@@ -135,6 +140,9 @@ func (n *NavStore) Search(ctx context.Context, userID, query string, topK int) (
 		if err != nil {
 			return nil, err
 		}
+		if run.submitted {
+			return records, nil
+		}
 		return nil, errors.Join(errNoEvidence, ctx.Err())
 	}
 	return records, nil
@@ -143,11 +151,12 @@ func (n *NavStore) Search(ctx context.Context, userID, query string, topK int) (
 // navRun is one search's tool state: the user's scope and what was read.
 // Not synchronized: the agent loop dispatches tool calls serially.
 type navRun struct {
-	nav     Navigator
-	scope   string
-	snippet int
-	fetched []Record // fetch order, the ranking when no submit arrives
-	ranked  []string // submit_evidence order
+	nav       Navigator
+	scope     string
+	snippet   int
+	fetched   []Record // fetch order, the ranking when no submit arrives
+	ranked    []string // submit_evidence order
+	submitted bool
 }
 
 // scoped validates an agent-supplied path against the user's subtree.
@@ -185,7 +194,7 @@ func (r *navRun) evidence(topK int) []Record {
 	if topK <= 0 {
 		return nil
 	}
-	if len(r.ranked) == 0 {
+	if !r.submitted {
 		out := r.fetched
 		if len(out) > topK {
 			out = out[:topK]
@@ -231,11 +240,11 @@ var navToolDefs = []llm.ToolDef{
 		map[string]llm.FunctionParam{
 			"path": {Type: "string", Description: "directory path, e.g. /sessions/ (relative to your scope)"},
 		}, "path"),
-	toolDef("memory_fetch", "Fetch a document by path. Returns the opening of the document, enough to judge relevance. Only fetched documents can be submitted.",
+	toolDef("memory_fetch", "Fetch a markdown document by path. Returns the opening of the document, enough to judge relevance. Directory paths are invalid. Only fetched documents can be submitted.",
 		map[string]llm.FunctionParam{
 			"path": {Type: "string", Description: "document path from a lookup or list result"},
 		}, "path"),
-	toolDef(submitToolName, "Submit the final evidence: fetched document paths ordered most-relevant first. Call exactly once, then stop.",
+	toolDef(submitToolName, "Submit the smallest sufficient final evidence set, ordered best first. For current or recommendation questions, exclude superseded and rejected alternatives. An empty array means no relevant evidence. Call exactly once, then stop.",
 		map[string]llm.FunctionParam{
 			"paths": {Type: "array", Description: "document paths, best first", Items: &llm.FunctionParam{Type: "string"}},
 		}, "paths"),
@@ -314,6 +323,9 @@ func (r *navRun) fetch(ctx context.Context, args map[string]any) (string, error)
 	if err != nil {
 		return "", err
 	}
+	if !strings.HasSuffix(docPath, ".md") {
+		return "", fmt.Errorf("path %s is not a markdown document; use memory_list for directories", docPath)
+	}
 	if rec, ok := r.record(docPath); ok {
 		return snippet(rec.Content, r.snippet), nil
 	}
@@ -331,6 +343,7 @@ func (r *navRun) submit(_ context.Context, args map[string]any) (string, error) 
 		return "", fmt.Errorf("paths must be an array of strings")
 	}
 	r.ranked = nil
+	r.submitted = true
 	seen := make(map[string]bool, len(raw))
 	for _, v := range raw {
 		s, ok := v.(string)

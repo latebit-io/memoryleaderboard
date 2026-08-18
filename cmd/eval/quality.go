@@ -64,7 +64,7 @@ func (e evaluator) quality(path string, defaultTopK int) int {
 		if res.status == 200 && body != nil {
 			errors = resultErrors(body, topK)
 		} else {
-			errors = []string{firstDetail(bodyError, res.err, fmt.Sprintf("status=%d", res.status))}
+			errors = []string{responseDetail(res, body, bodyError)}
 		}
 		if len(errors) != 0 {
 			operationalFailures++

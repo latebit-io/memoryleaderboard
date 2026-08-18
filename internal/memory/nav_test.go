@@ -164,6 +164,34 @@ func TestSearchReturnsFetchedEvidenceAfterProviderFailure(t *testing.T) {
 	}
 }
 
+func TestSearchReturnsProviderErrorWhenNothingFetched(t *testing.T) {
+	nav := &fakeNav{docs: map[string]string{}}
+	provider := &scriptedProvider{
+		turns:     [][]llm.ToolCall{{call("1", "memory_lookup", map[string]any{"query": "alpha"})}},
+		failAfter: 1,
+	}
+	store := NewNavStore(errStore{}, nav, provider, NavOptions{})
+
+	_, err := store.Search(context.Background(), "u1", "alpha", 10)
+	if err == nil || !strings.Contains(err.Error(), "scripted provider failure") {
+		t.Fatalf("error = %v, want provider failure", err)
+	}
+}
+
+func TestSearchReturnsEmptySubmittedEvidence(t *testing.T) {
+	store, _ := newFakeNavStore(t, map[string]string{}, [][]llm.ToolCall{{
+		call("1", "submit_evidence", map[string]any{"paths": []any{}}),
+	}})
+
+	records, err := store.Search(context.Background(), "u1", "missing", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records == nil || len(records) != 0 {
+		t.Fatalf("records = %#v, want non-nil empty slice", records)
+	}
+}
+
 func TestSearchErrorsWhenNothingRead(t *testing.T) {
 	store, _ := newFakeNavStore(t, map[string]string{"/u/u1/a.md": "alpha"}, nil)
 	if _, err := store.Search(context.Background(), "u1", "alpha", 10); err == nil {
@@ -233,6 +261,13 @@ func TestListBoundsTranscript(t *testing.T) {
 	}
 	if got := len(strings.TrimSuffix(out, "\n[truncated]")); got != maxListBytes {
 		t.Errorf("listing kept %d bytes, want %d", got, maxListBytes)
+	}
+}
+
+func TestFetchRejectsDirectory(t *testing.T) {
+	run := &navRun{nav: &fakeNav{docs: map[string]string{}}, scope: "/u/u1"}
+	if _, err := run.fetch(context.Background(), map[string]any{"path": "/u/u1/"}); err == nil {
+		t.Fatal("fetch accepted directory path")
 	}
 }
 
