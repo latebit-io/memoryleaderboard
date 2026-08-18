@@ -27,6 +27,9 @@ func withRateLimitRetries(provider llm.Provider) llm.Provider {
 
 func (p *rateLimitRetryProvider) Stream(ctx context.Context, messages []llm.Message, tools []llm.ToolDef) (<-chan llm.StreamEvent, error) {
 	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		stream, err := p.Provider.Stream(ctx, messages, tools)
 		if err == nil {
 			return stream, nil

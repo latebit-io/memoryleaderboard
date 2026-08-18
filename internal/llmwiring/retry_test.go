@@ -34,6 +34,20 @@ func TestRateLimitRetryProvider(t *testing.T) {
 	}
 }
 
+func TestRateLimitRetryProviderSkipsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	provider := &retryTestProvider{}
+
+	_, err := withRateLimitRetries(provider).Stream(ctx, nil, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context canceled", err)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("calls = %d, want 0", provider.calls)
+	}
+}
+
 func TestRateLimitDelay(t *testing.T) {
 	for _, test := range []struct {
 		message string

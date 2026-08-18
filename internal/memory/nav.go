@@ -86,8 +86,8 @@ func NewNavStore(store Store, nav Navigator, provider llm.Provider, opts NavOpti
 // errNoEvidence reports a run that finished without submitting anything.
 var errNoEvidence = errors.New("nav agent submitted no evidence")
 
-// Search runs the navigation agent. A run that ends early still returns
-// whatever it read, since partial evidence still scores.
+// Search runs the navigation agent. A clean run that stops without submitting
+// returns fetched evidence, but terminal failures take precedence.
 func (n *NavStore) Search(ctx context.Context, userID, query string, topK int) ([]Record, error) {
 	ctx, cancel := context.WithTimeout(ctx, n.opts.Budget)
 	defer cancel()
@@ -129,12 +129,19 @@ func (n *NavStore) Search(ctx context.Context, userID, query string, topK int) (
 	if err == nil {
 		a.WaitForIdle()
 		if lastError := a.State().LastError; lastError != "" {
-			err = errors.New(lastError)
+			if strings.HasSuffix(lastError, errNoEvidence.Error()) {
+				err = errNoEvidence
+			} else {
+				err = errors.New(lastError)
+			}
 		}
 	}
 	close(events)
 	<-drained
 
+	if err != nil && !errors.Is(err, errNoEvidence) {
+		return nil, err
+	}
 	records := run.evidence(topK)
 	if len(records) == 0 {
 		if err != nil {

@@ -147,7 +147,7 @@ func TestSearchFallsBackToFetchOrderWithoutSubmit(t *testing.T) {
 	}
 }
 
-func TestSearchReturnsFetchedEvidenceAfterProviderFailure(t *testing.T) {
+func TestSearchReturnsProviderErrorAfterFetch(t *testing.T) {
 	nav := &fakeNav{docs: map[string]string{"/u/u1/a.md": "alpha"}}
 	provider := &scriptedProvider{
 		turns:     [][]llm.ToolCall{{call("1", "memory_fetch", map[string]any{"path": "/u/u1/a.md"})}},
@@ -156,11 +156,11 @@ func TestSearchReturnsFetchedEvidenceAfterProviderFailure(t *testing.T) {
 	store := NewNavStore(errStore{}, nav, provider, NavOptions{})
 
 	records, err := store.Search(context.Background(), "u1", "alpha", 10)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !strings.Contains(err.Error(), "scripted provider failure") {
+		t.Fatalf("error = %v, want provider failure", err)
 	}
-	if len(records) != 1 || records[0].ID != "/u/u1/a.md" {
-		t.Fatalf("records = %+v, want fetched evidence", records)
+	if records != nil {
+		t.Fatalf("records = %+v, want nil on provider failure", records)
 	}
 }
 
