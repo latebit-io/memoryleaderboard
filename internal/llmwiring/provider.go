@@ -41,7 +41,7 @@ func Provider(logger *slog.Logger) llm.Provider {
 		return nil
 	}
 	logger.Info("llm provider", "profile", resolved.Profile, "model", resolved.DisplayModel())
-	return resolved.NewProvider()
+	return withRateLimitRetries(resolved.NewProvider())
 }
 
 func wireOAuth(resolved *llmconfig.Resolved, logger *slog.Logger) {
